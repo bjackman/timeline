@@ -124,9 +124,20 @@ That is what makes a top-N cut honest rather than a silent truncation.
 
 ## Stack
 
-- Ingestion: Rust. Streaming, fast, and the same code serves both the WDQS and
-  dump routes.
-- Frontend: TypeScript + canvas. Not DOM — thousands of elements per frame.
+As built in v0 — this section originally guessed Rust and TypeScript, and the
+guess did not survive contact with the work. See `docs/decisions.md`.
+
+- Ingestion: Node, no dependencies. The bottleneck is WDQS latency and the
+  politeness delay between queries, not local compute, so a faster language buys
+  nothing. Revisit for the dump route, where parsing hundreds of GB of
+  N-triples *is* compute-bound — Rust earns its place there.
+- Frontend: plain JavaScript ES modules + canvas. No build step. Canvas rather
+  than DOM because it is thousands of elements per frame; plain JS rather than
+  TypeScript because a bundler buys nothing at two files and a rotted
+  `node_modules` is how a checkout stops working six months later.
+- Time-scale logic lives in `web/scale.js`, kept DOM-free so it can be tested
+  headlessly (`tools/test-scale.mjs`). It is the part most likely to be subtly
+  wrong in ways that still look plausible on screen.
 - Hosting: static. GitHub Pages or Cloudflare Pages.
 
 ## Phasing
