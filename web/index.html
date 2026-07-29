@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230f1117'/%3E%3Crect x='1' y='7' width='14' height='2' fill='%235b6ee1'/%3E%3C/svg%3E" />
+    <title>Timeline — v0</title>
+    <style>
+      :root {
+        --bg: #0f1117;
+        --panel: #161923;
+        --text: #e6e8ee;
+        --muted: #8890a4;
+        --axis-text: #7b839a;
+        --label: #c3c9d8;
+        --border: rgba(255, 255, 255, 0.1);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: 0.02em;
+      }
+      h1 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+      #readout {
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+        font-size: 12px;
+        margin-left: auto;
+      }
+      #filters { display: flex; gap: 6px; flex-wrap: wrap; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 3px 10px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        opacity: 0.45;
+      }
+      .chip.on { opacity: 1; color: var(--text); }
+      .chip .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+      .chip .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+      button#reset {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        border-radius: 6px;
+        padding: 3px 10px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #wrap { position: absolute; inset: 0; top: 0; display: flex; flex-direction: column; }
+      #tl {
+        flex: 1;
+        width: 100%;
+        display: block;
+        cursor: grab;
+        --axis-text: #7b839a;
+        --label: #c3c9d8;
+      }
+      footer {
+        padding: 6px 16px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 11px;
+        background: var(--panel);
+      }
+      a { color: #7aa2f7; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <header>
+        <h1>Timeline <small>v0 development slice</small></h1>
+        <div id="filters"></div>
+        <button id="reset">reset view</button>
+        <div id="readout"></div>
+      </header>
+      <canvas id="tl"></canvas>
+      <footer>
+        Scroll to zoom · drag to pan · click an event to open Wikipedia. Bands
+        show date uncertainty, not duration, unless the event has an end date.
+        Data from
+        <a href="https://www.wikidata.org">Wikidata</a> (CC0).
+      </footer>
+    </div>
+    <script type="module" src="./timeline.js"></script>
+  </body>
+</html>

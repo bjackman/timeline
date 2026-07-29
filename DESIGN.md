@@ -131,8 +131,10 @@ That is what makes a top-N cut honest rather than a silent truncation.
 
 ## Phasing
 
-- **v0** — sharded WDQS pull of ~5k high-notability events, plus a canvas
-  timeline. Proves the zoom UX, which is the risky part.
+- **v0 — done.** Sharded WDQS pull, 525 items from the Big Bang to the present,
+  rendered on a log axis with zoom, pan, precision bands, category filters and a
+  density strip. Proved the zoom UX, which was the risky part. See
+  `docs/decisions.md` for what it does not do yet.
 - **v1** — full sharded harvest, tiling, notability ranking.
 - **v2** — category filters, search, preview cards.
 - **v3** — dump-based completeness pass, pageview ranking, images, other
