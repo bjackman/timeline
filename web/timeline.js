@@ -15,25 +15,56 @@ import {
   PRECISION_HALF_WIDTH_YEARS,
 } from "./scale.js";
 
-const CATEGORY_COLOURS = {
-  conflict: "#d1495b",
-  disaster: "#e07a3f",
-  life: "#4c9f70",
-  geology: "#8a6d3b",
-  politics: "#5b6ee1",
-  science: "#3aa8c1",
-  culture: "#9b5de5",
-  sport: "#2a9d8f",
-  period: "#b08968",
-  other: "#8d99ae",
-};
+const CATEGORIES = [
+  "conflict",
+  "disaster",
+  "life",
+  "geology",
+  "politics",
+  "science",
+  "culture",
+  "sport",
+  "period",
+  "other",
+];
 
 const LANE_HEIGHT = 22;
 const MARKER_RADIUS = 3.5;
 const TOP_MARGIN = 56;
 const DENSITY_HEIGHT = 46;
-const AXIS_TEXT = "#7b839a";
-const LABEL_TEXT = "#c3c9d8";
+const UI_FONT = '12px system-ui, -apple-system, "Segoe UI", sans-serif';
+const MONO_FONT = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+// Canvas colours come from the same CSS custom properties as the chrome, so a
+// theme change cannot leave a dark chart sitting inside a light page. Cached
+// because reading computed style per frame is needless work; invalidated
+// whenever the theme actually changes.
+let paletteCache = null;
+
+function palette() {
+  if (paletteCache) return paletteCache;
+  const s = getComputedStyle(document.documentElement);
+  const v = (name) => s.getPropertyValue(name).trim();
+  paletteCache = {
+    axis: v("--c-axis"),
+    label: v("--c-label"),
+    gridMajor: v("--c-grid-major"),
+    gridMinor: v("--c-grid-minor"),
+    density: v("--c-density"),
+    plate: v("--c-plate"),
+    cardBg: v("--c-card-bg"),
+    cardBorder: v("--c-card-border"),
+    cardTitle: v("--c-card-title"),
+    cardBody: v("--c-card-body"),
+    hoverLabel: v("--c-hover-label"),
+    cat: Object.fromEntries(CATEGORIES.map((c) => [c, v(`--cat-${c}`)])),
+  };
+  return paletteCache;
+}
+
+export function invalidatePalette() {
+  paletteCache = null;
+}
 
 // Screen extent of an item, including its precision band and its label.
 // Bands are computed in year space and then projected, so they warp correctly
@@ -96,7 +127,7 @@ class Timeline {
     // most people are looking for. Same ranking the tile pipeline will use.
     this.all = [...data.items].sort((a, b) => b.sitelinks - a.sitelinks);
     this.items = this.all;
-    this.enabled = new Set(Object.keys(CATEGORY_COLOURS));
+    this.enabled = new Set(CATEGORIES);
     this.hover = null;
     this.dragging = false;
     this.resize();
@@ -197,7 +228,7 @@ class Timeline {
     const W = this.cssWidth;
     const H = this.cssHeight;
     ctx.clearRect(0, 0, W, H);
-    ctx.font = "12px system-ui, -apple-system, sans-serif";
+    ctx.font = UI_FONT;
     ctx.textBaseline = "middle";
 
     this.drawAxis(H);
@@ -216,7 +247,7 @@ class Timeline {
     for (const t of ticks(view)) {
       const x = view.x(t.year);
       if (x < 0 || x > this.cssWidth) continue;
-      ctx.strokeStyle = t.major ? "rgba(128,128,128,0.32)" : "rgba(128,128,128,0.13)";
+      ctx.strokeStyle = t.major ? palette().gridMajor : palette().gridMinor;
       ctx.beginPath();
       ctx.moveTo(x, t.major ? 30 : 38);
       ctx.lineTo(x, H - DENSITY_HEIGHT);
@@ -224,14 +255,16 @@ class Timeline {
       if (t.major) {
         // Centred text gets sliced at the canvas edges, so nudge the outermost
         // labels inward and align them accordingly.
+        ctx.font = MONO_FONT;
         const text = formatYear(t.year);
         const w = ctx.measureText(text).width;
         if (x - w / 2 < 2) ctx.textAlign = "left";
         else if (x + w / 2 > this.cssWidth - 2) ctx.textAlign = "right";
         else ctx.textAlign = "center";
         const tx = ctx.textAlign === "left" ? 2 : ctx.textAlign === "right" ? this.cssWidth - 2 : x;
-        ctx.fillStyle = AXIS_TEXT;
+        ctx.fillStyle = palette().axis;
         ctx.fillText(text, tx, 20);
+        ctx.font = UI_FONT;
       }
     }
   }
@@ -240,15 +273,19 @@ class Timeline {
     const { ctx } = this;
     const { item } = p;
     const y = TOP_MARGIN + p.lane * LANE_HEIGHT + LANE_HEIGHT / 2;
-    const colour = CATEGORY_COLOURS[item.category] ?? CATEGORY_COLOURS.other;
+    const pal = palette();
+    const colour = pal.cat[item.category] ?? pal.cat.other;
     const isHover = this.hover?.item?.qid === item.qid;
     const bandWidth = p.x1 - p.x0;
 
     if (item.end || bandWidth > 3) {
       // A span, or a point whose date uncertainty is wide enough to see. Either
       // way the on-screen extent is meaningful and must be drawn.
-      ctx.fillStyle = colour + (item.end ? "cc" : "55");
+      ctx.save();
+      ctx.globalAlpha = item.end ? 0.8 : 0.33;
+      ctx.fillStyle = colour;
       ctx.fillRect(p.x0, y - 5, Math.max(bandWidth, 2), 10);
+      ctx.restore();
       if (!item.end) {
         // Uncertain point: mark the nominal value inside its band.
         ctx.fillStyle = colour;
@@ -270,9 +307,9 @@ class Timeline {
       ctx.save();
       ctx.shadowColor = "rgba(0,0,0,0.9)";
       ctx.shadowBlur = 4;
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = pal.hoverLabel;
     } else {
-      ctx.fillStyle = LABEL_TEXT;
+      ctx.fillStyle = pal.label;
     }
     ctx.fillText(item.label, p.labelX, y);
     if (isHover) ctx.restore();
@@ -293,7 +330,7 @@ class Timeline {
       bins[Math.floor(x / BIN)]++;
     }
     const max = Math.max(1, ...bins);
-    ctx.fillStyle = "rgba(128,140,170,0.5)";
+    ctx.fillStyle = palette().density;
     for (let i = 0; i < bins.length; i++) {
       if (!bins[i]) continue;
       const h = (bins[i] / max) * (DENSITY_HEIGHT - 18);
@@ -308,12 +345,14 @@ class Timeline {
     // Plate behind the caption: it sits over the histogram, and this is the one
     // piece of text that must stay readable — it is what stops a top-N cut from
     // looking like complete coverage.
+    ctx.font = MONO_FONT;
     const cw = ctx.measureText(caption).width;
-    ctx.fillStyle = "rgba(15,17,23,0.85)";
+    ctx.fillStyle = palette().plate;
     ctx.fillRect(4, H - 20, cw + 10, 17);
-    ctx.fillStyle = AXIS_TEXT;
+    ctx.fillStyle = palette().axis;
     ctx.textAlign = "left";
     ctx.fillText(caption, 9, H - 11);
+    ctx.font = UI_FONT;
   }
 
   drawHoverCard() {
@@ -325,8 +364,14 @@ class Timeline {
       formatItemDate(item),
       `${item.category} · ${item.sitelinks} language versions`,
     ];
-    ctx.font = "12px system-ui, sans-serif";
-    const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 20;
+    const fonts = [UI_FONT, MONO_FONT, MONO_FONT];
+    const w =
+      Math.max(
+        ...lines.map((l, i) => {
+          ctx.font = fonts[i];
+          return ctx.measureText(l).width;
+        }),
+      ) + 20;
     const h = lines.length * 17 + 14;
     const x = Math.max(8, Math.min(this.hover.x0 + 12, this.cssWidth - w - 8));
     const y = Math.min(
@@ -334,8 +379,9 @@ class Timeline {
       this.cssHeight - h - DENSITY_HEIGHT,
     );
 
-    ctx.fillStyle = "rgba(18,20,28,0.96)";
-    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    const pc = palette();
+    ctx.fillStyle = pc.cardBg;
+    ctx.strokeStyle = pc.cardBorder;
     ctx.beginPath();
     ctx.roundRect(x, y, w, h, 6);
     ctx.fill();
@@ -343,8 +389,8 @@ class Timeline {
 
     ctx.textAlign = "left";
     lines.forEach((line, i) => {
-      ctx.fillStyle = i === 0 ? "#fff" : "#aab";
-      ctx.font = i === 0 ? "600 12px system-ui, sans-serif" : "12px system-ui, sans-serif";
+      ctx.fillStyle = i === 0 ? pc.cardTitle : pc.cardBody;
+      ctx.font = i === 0 ? '650 12px system-ui, -apple-system, sans-serif' : MONO_FONT;
       ctx.fillText(line, x + 10, y + 16 + i * 17);
     });
   }
@@ -359,8 +405,8 @@ class Timeline {
 }
 
 async function main() {
-  const res = await fetch("../data/slice.json");
-  const data = await res.json();
+  // The single-file build injects the slice on window; the dev server fetches it.
+  const data = window.__SLICE__ ?? (await (await fetch("../data/slice.json")).json());
 
   const canvas = document.getElementById("tl");
   const tl = new Timeline(canvas, data);
@@ -370,13 +416,15 @@ async function main() {
   const bar = document.getElementById("filters");
   const counts = {};
   for (const i of data.items) counts[i.category] = (counts[i.category] ?? 0) + 1;
-  for (const [cat, colour] of Object.entries(CATEGORY_COLOURS)) {
+  for (const cat of CATEGORIES) {
     if (!counts[cat]) continue;
+    const colour = palette().cat[cat];
     const chip = document.createElement("button");
     chip.className = "chip on";
+    chip.dataset.cat = cat;
     chip.innerHTML =
       `<span class="dot" style="background:${colour}"></span>${cat} ` +
-      `<span class="n">${counts[cat]}</span>`;
+      `<span class="n num">${counts[cat]}</span>`;
     chip.onclick = () => {
       if (tl.enabled.has(cat)) tl.enabled.delete(cat);
       else tl.enabled.add(cat);
@@ -391,6 +439,22 @@ async function main() {
     tl.view = new View(tl.cssWidth);
     tl.render();
   };
+
+  const onThemeChange = () => {
+    invalidatePalette();
+    for (const chip of bar.querySelectorAll(".chip")) {
+      const dot = chip.querySelector(".dot");
+      if (dot) dot.style.background = palette().cat[chip.dataset.cat];
+    }
+    tl.render();
+  };
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", onThemeChange);
+  // The viewer's theme toggle stamps data-theme on the root element rather than
+  // firing an event, so watch the attribute directly.
+  new MutationObserver(onThemeChange).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
 
   tl.applyFilter();
   tl.render();

@@ -148,3 +148,44 @@ Recorded so they are not rediscovered as bugs.
 - **The slice is 525 items, not a corpus.** Bucket coverage is deliberately
   uneven — 25 per era bucket regardless of how many events that era really has.
   Deep-time buckets are dominated by taxa because that is what has dates there.
+
+---
+
+## Canvas colours read from CSS custom properties
+
+**Chosen:** the canvas resolves its colours from the same `--c-*` / `--cat-*`
+tokens that style the chrome, cached and invalidated on theme change.
+
+**Rejected:** hardcoded colour constants in `timeline.js` (what v0 shipped with).
+A hosted page renders in the viewer's theme, so a hardcoded dark chart sits
+inside a light page for anyone whose system prefers light mode — the chrome flips
+and the chart does not.
+
+**Rejected:** a JS palette object with a light and dark variant. Works, but then
+the same colour is declared in two places and they drift. Tokens keep one source
+of truth.
+
+Category hues are separately tuned per theme rather than reused: `#d1495b` reads
+correctly on `#0e1016` and goes muddy on white, so the light theme uses darker,
+more saturated variants.
+
+Two consequences worth knowing: span fills use `ctx.globalAlpha` rather than
+appending alpha to a hex string, since a token may be authored as `rgb()`; and
+the viewer's theme toggle stamps `data-theme` on the root element without firing
+an event, so it needs a `MutationObserver`, not just a `matchMedia` listener.
+
+---
+
+## `dist/` is generated and gitignored
+
+**Chosen:** build `dist/timeline.html` on demand with
+`node tools/build-standalone.mjs`.
+
+**Rejected:** committing the bundle. It embeds a full copy of `data/slice.json`,
+so it silently goes stale whenever the slice is regenerated, and a stale
+committed demo is worse than no committed demo. It also would not buy a working
+link — GitHub serves raw HTML as `text/plain`.
+
+The bundle exists because a hosted page under a strict CSP cannot fetch
+`../data/slice.json`; everything has to be inline. It is generated from the same
+`web/` sources the dev server uses, so the two cannot diverge.

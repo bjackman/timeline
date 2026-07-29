@@ -9,12 +9,16 @@ query behaviour that is not obvious and cost real time to find.
 ## Where things are
 
 ```
-DESIGN.md              architecture and phasing
-docs/wdqs-notes.md     measured WDQS behaviour — read before touching queries
-docs/decisions.md      decision log: what was chosen, what was rejected, why
-tools/fetch-slice.mjs  builds the v0 dev slice from WDQS
-data/slice.json        the v0 slice (committed; regenerate with the tool)
-web/                   canvas frontend, no build step
+DESIGN.md                   architecture and phasing
+docs/wdqs-notes.md          measured WDQS behaviour — read before touching queries
+docs/decisions.md           decision log: chosen, rejected, why; known limitations
+tools/fetch-slice.mjs       builds the v0 dev slice from WDQS
+tools/test-scale.mjs        headless tests for the time-scale maths
+tools/build-standalone.mjs  bundles everything into one self-contained HTML file
+tools/screenshot.mjs        renders the page at several zooms (needs playwright)
+data/slice.json             the v0 slice (committed; regenerate with the tool)
+web/                        canvas frontend, no build step
+dist/                       derived, gitignored
 ```
 
 ## Running it
@@ -22,13 +26,24 @@ web/                   canvas frontend, no build step
 No build, no dependencies, no server framework. Node 22+ for the fetcher.
 
 ```sh
-# regenerate the data slice (~20 min, hits WDQS politely)
-node tools/fetch-slice.mjs --per-bucket 25
+# tests for the time-scale maths — fast, no network
+node tools/test-scale.mjs
 
 # serve — must be over http, the page fetches ../data/slice.json
 python3 -m http.server 8000
 # then open http://localhost:8000/web/
+
+# regenerate the data slice (~20 min, hits WDQS politely)
+node tools/fetch-slice.mjs --per-bucket 25
+
+# bundle into one file that opens straight off disk, no server
+node tools/build-standalone.mjs      # -> dist/timeline.html
 ```
+
+`tools/screenshot.mjs` needs Playwright, which is deliberately not a dependency:
+`npm install --no-save playwright`. It prefers an already-installed Chromium over
+downloading one, since an ad-hoc install usually wants a browser build the
+machine does not have.
 
 `web/` is plain ES modules on purpose. A bundler buys nothing at this size and
 costs a working checkout when `node_modules` rots. Revisit if the frontend
@@ -63,6 +78,14 @@ These are load-bearing. Each one is a bug that has already been hit.
   and World War II.
 - **Wikidata items may have no English label.** Fall back to the enwiki sitelink
   title.
+- **Canvas colours must come from the CSS tokens**, via `palette()` in
+  `web/timeline.js` — never hardcoded. The page renders in the viewer's light or
+  dark theme, and a hardcoded chart goes dark-on-light for anyone preferring
+  light mode. Adding a colour means adding a `--c-*` or `--cat-*` token to
+  `web/index.html` in **all three** theme blocks: `:root`, the
+  `prefers-color-scheme: dark` media query, and both `[data-theme]` overrides.
+- **Do not hand-edit `dist/timeline.html`.** It is generated; edit `web/` and
+  rebuild.
 
 ## Working style for this repo
 
