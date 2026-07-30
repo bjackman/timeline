@@ -9,6 +9,7 @@ query behaviour that is not obvious and cost real time to find.
 ## Where things are
 
 ```
+flake.nix                   Nix packaging (flake-utils); no flake.lock yet, see below
 DESIGN.md                   architecture and phasing
 docs/wdqs-notes.md          measured WDQS behaviour — read before touching queries
 docs/decisions.md           decision log: chosen, rejected, why; known limitations
@@ -23,7 +24,36 @@ dist/                       derived, gitignored
 
 ## Running it
 
-No build, no dependencies, no server framework. Node 22+ for the fetcher.
+### With Nix
+
+```sh
+nix flake lock          # ONCE — no lock is committed, see below
+nix run                 # build and serve the bundle on :8000
+nix run .#dev           # serve the working tree (repo root) at /web/
+nix run .#test          # the time-scale tests
+nix run .#fetch-slice   # re-fetch data/slice.json from Wikidata (~20 min)
+nix build               # -> result/index.html, deployable as-is
+nix flake check         # tests + bundle build
+nix develop             # node, python3, jq
+nix fmt                 # nixfmt-rfc-style
+```
+
+**`flake.lock` is not committed.** It could not be generated in the environment
+this was written in — GitHub was unreachable for anything outside the repo's own
+owner, so the inputs could not be resolved. Run `nix flake lock` once and commit
+the result. The flake itself is verified: every output was evaluated and the
+packages, checks and apps were built, with the two inputs temporarily redirected
+to `channels.nixos.org` and `flakehub.com`.
+
+The fetcher is an **app, not a package**, because it needs network and a Nix
+build sandbox has none. `packages.default` is the bundled single file rather than
+the `web/` + `data/` dev layout, since the dev page fetches
+`../data/slice.json` and that only resolves when the server root is the repo
+root.
+
+### Without Nix
+
+Node 22+ for the tools, Python for the server.
 
 ```sh
 # tests for the time-scale maths — fast, no network

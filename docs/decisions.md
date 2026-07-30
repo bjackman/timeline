@@ -189,3 +189,35 @@ link — GitHub serves raw HTML as `text/plain`.
 The bundle exists because a hosted page under a strict CSP cannot fetch
 `../data/slice.json`; everything has to be inline. It is generated from the same
 `web/` sources the dev server uses, so the two cannot diverge.
+
+---
+
+## Nix: the fetcher is an app, the bundle is the package
+
+**Chosen:** `flake-utils.lib.eachDefaultSystem`, with
+`packages.default` = the bundled single-file site, `checks` = the scale tests
+plus the bundle build, and the WDQS fetcher exposed as `apps.fetch-slice`.
+
+**Rejected:** making the fetcher a package. A Nix build sandbox has no network,
+so a derivation cannot query WDQS. Anything that talks to the network has to be
+an app.
+
+**Rejected:** shipping the `web/` + `data/` dev layout as the package. The dev
+page fetches `../data/slice.json`, which only resolves when the server root is
+the repo root — so a naive `$out` with `index.html` at the top would break. The
+bundle has no fetch at all and sidesteps it, which is what DESIGN.md wants for
+deployment anyway. `apps.dev` still serves the working tree for iteration.
+
+**Not done: `flake.lock` is absent.** It could not be generated where this was
+written — GitHub was unreachable for repositories outside the project's own
+owner, so `nixpkgs` and `flake-utils` could not be resolved, and a lock pinning
+the mirrors used for verification would have been actively misleading. Run
+`nix flake lock` once locally.
+
+The flake is otherwise verified rather than assumed: all outputs evaluated
+clean, `packages.standalone`, `packages.default` and `checks.scale-tests` all
+built (the check reporting 46 passed inside the sandbox), `nix run .#test`
+worked, and the resulting `index.html` was loaded in Chromium in both themes
+with zero console errors. Verification used `nixpkgs` from
+`channels.nixos.org` and `flake-utils` from `flakehub.com`; the committed file
+differs from the verified one only in those two input URLs.
