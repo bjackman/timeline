@@ -7,6 +7,43 @@ Newest first.
 
 ---
 
+## Bad upstream data is fixed upstream, not filtered in the pipeline
+
+**Chosen:** treat Wikidata as golden. When a value is garbage, fix it on
+Wikidata rather than working around it here.
+
+**Rejected (for now):** a validation pass that drops self-contradictory deep
+time values. The case that raised it: Gondwana (Q80583) had an end time of
+`-0335-00-00T00:00:00Z` at precision 3 — "335 BCE, known to the nearest million
+years". The intent was 335 **Ma**; the value is a million times too small. It
+rendered as a bar stretching from ~500 kya to the present day, because a
+precision-3 band is ±500,000 years wide and the band swamped the value.
+
+The rule that would catch it, if it is ever wanted: **a value whose magnitude
+is smaller than its own precision granularity is self-contradictory.** Measured
+against the 525-item slice it flags Gondwana and nothing else — no false
+positives.
+
+Also measured, and worse: **"the year must be a multiple of the granularity"
+wrongly flags 19 legitimate items**, including Paleolithic (`-3300000` at
+million-year precision), Upper Paleolithic and Aurignacian (`-38000` at
+ten-thousand-year precision) and most century-precision dates like `-3351`.
+Wikidata does not round values to their stated precision, so that rule is not
+usable. Do not reach for it.
+
+Deferred rather than rejected outright: precision handling deserves a general
+strategy, and this is one input to it, not the whole question.
+
+Worth knowing when checking a suspect value: **WDQS lags the authoritative
+data**, and different replicas disagree. Gondwana's start time read as broken
+through the query service minutes after it had already been fixed upstream.
+`Special:EntityData/Q<id>.json` is the source of truth. Note it stores unknown
+month and day as `00`, which `wikibase:timeValue` normalises to `01` — so the
+two views of the same statement differ in a way that looks like a bug and is
+not.
+
+---
+
 ## Categories: P279* closure, ordered rules, cached offline
 
 **Chosen:** classify each item by expanding its `P31` types to their full
