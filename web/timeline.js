@@ -12,6 +12,7 @@ import {
   LinearView,
   BIG_BANG,
   NOW,
+  FULL_SPAN_YEARS,
   formatYear,
   formatTickYear,
   formatSpan,
@@ -39,8 +40,22 @@ const CATEGORIES = [
 
 const LANE_HEIGHT = 22;
 const MARKER_RADIUS = 3.5;
-const TOP_MARGIN = 56;
 const DENSITY_HEIGHT = 46;
+
+// The minimap: all of history, linear and fixed, with the current viewport
+// marked on it. Its whole point is honesty about proportion — the log
+// navigator below can show every era legibly but cannot show that everything
+// human occupies the last thousandth of a pixel. This can, and does.
+//
+// Sits directly above the detail view with leader lines between them, the
+// standard overview-and-detail arrangement, so the expansion is visible rather
+// than implied.
+const MINIMAP_TOP = 32;
+const MINIMAP_HEIGHT = 26;
+const MINIMAP_INSET = 8;
+const MINIMAP_MIN_MARK = 2;
+const AXIS_TOP = MINIMAP_TOP + MINIMAP_HEIGHT + 12;
+const TOP_MARGIN = AXIS_TOP + 18;
 
 // The navigator: a logarithmic strip showing all of time at once, with the
 // linear window marked on it. Log is genuinely good at "everything at once"
@@ -98,6 +113,22 @@ export function invalidatePalette() {
   paletteCache = null;
 }
 
+// "1 part in 5 billion" beats "1 part in 4,932,817,443": at these ratios the
+// digits are noise and the magnitude is the message.
+function sigFigs(v) {
+  // Number(...toPrecision(2)) rather than toPrecision(2) alone: the mantissa
+  // runs up to 999 within a tier, and (138).toPrecision(2) is "1.4e+2", which
+  // would put "1 part in 1.4e+2 million" on screen.
+  const round2 = (x) => Number(x.toPrecision(2));
+  // The full zoom range is 5e12, so trillions are reachable — at maximum zoom
+  // the viewport really is one part in five trillion of history.
+  if (v >= 1e12) return `${round2(v / 1e12)} trillion`;
+  if (v >= 1e9) return `${round2(v / 1e9)} billion`;
+  if (v >= 1e6) return `${round2(v / 1e6)} million`;
+  if (v >= 1e3) return `${round2(v / 1e3)} thousand`;
+  return String(Math.round(v));
+}
+
 // Screen extent of an item, including its precision band and its label.
 // Bands are computed in year space and then projected, so they warp correctly
 // under the log axis rather than being a fixed pixel width.
@@ -146,6 +177,16 @@ class Timeline {
     // The navigator's own projection: log, fixed at the full extent, never
     // zoomed. It is a fixed frame of reference — that is the point of it.
     this.nav = new View(rect.width);
+    // The minimap's: linear, fixed, all of time. Constructed with an explicit
+    // span so it never picks up the detail view's edge padding — the minimap
+    // is a ruler, and a ruler with slack at the ends is not one. The inset is
+    // in the span so the ends of time land just inside the canvas.
+    const inset = FULL_SPAN_YEARS * (MINIMAP_INSET / Math.max(1, rect.width));
+    this.map = new LinearView(
+      rect.width,
+      (BIG_BANG + NOW) / 2,
+      FULL_SPAN_YEARS + 2 * inset,
+    );
   }
 
   // Vertical layout, bottom-up: navigator, gap, density strip, then the lanes.
@@ -239,12 +280,20 @@ class Timeline {
       if (p.y >= this.navTop) {
         // Navigator. Shift selects a range; otherwise grab and slide, jumping
         // straight to wherever you pressed.
-        this.mode = e.shiftKey ? "nav-select" : "nav-drag";
-        if (this.mode === "nav-select") this.select = { x0: p.x, x1: p.x, nav: true };
+        this.mode = e.shiftKey ? "strip-select" : "strip-drag";
+        this.strip = this.nav;
+        if (this.mode === "strip-select") this.select = { x0: p.x, x1: p.x, strip: "nav" };
         else this.view.centre = this.nav.yearAt(p.x);
+      } else if (p.y >= MINIMAP_TOP - 8 && p.y <= MINIMAP_TOP + MINIMAP_HEIGHT) {
+        // The minimap travels too. Coarse by nature — one pixel is ten million
+        // years — but it is the fastest way back out to somewhere else entirely.
+        this.mode = e.shiftKey ? "strip-select" : "strip-drag";
+        this.strip = this.map;
+        if (this.mode === "strip-select") this.select = { x0: p.x, x1: p.x, strip: "map" };
+        else this.view.centre = this.map.yearAt(p.x);
       } else if (e.shiftKey) {
         this.mode = "select";
-        this.select = { x0: p.x, x1: p.x, nav: false };
+        this.select = { x0: p.x, x1: p.x, strip: null };
       } else if (e.button === 2 || e.button === 1) {
         this.mode = "zoom-drag";
       } else {
@@ -269,12 +318,12 @@ class Timeline {
           // as many orders of magnitude as you have screen for.
           this.view.zoomAt(anchorX, Math.exp(dy / DRAG_ZOOM_PIXELS_PER_EFOLD));
           break;
-        case "nav-drag":
-          this.view.centre = this.nav.yearAt(p.x);
+        case "strip-drag":
+          this.view.centre = this.strip.yearAt(p.x);
           this.view.clamp();
           break;
         case "select":
-        case "nav-select":
+        case "strip-select":
           this.select.x1 = p.x;
           break;
         default:
@@ -291,8 +340,8 @@ class Timeline {
       c.releasePointerCapture(e.pointerId);
 
       if (this.select) {
-        const { x0, x1, nav } = this.select;
-        const proj = nav ? this.nav : this.view;
+        const { x0, x1, strip } = this.select;
+        const proj = strip === "nav" ? this.nav : strip === "map" ? this.map : this.view;
         // A stray shift-click is not a selection; ignore anything too narrow to
         // be meant, rather than zooming to a one-pixel sliver of time.
         if (Math.abs(x1 - x0) > 4) {
@@ -393,6 +442,7 @@ class Timeline {
     ctx.font = UI_FONT;
     ctx.textBaseline = "middle";
 
+    this.drawMinimap();
     this.drawAxis(H);
     this.drawEdges();
 
@@ -451,9 +501,14 @@ class Timeline {
   drawSelection() {
     if (!this.select) return;
     const { ctx } = this;
-    const { x0, x1, nav } = this.select;
-    const top = nav ? this.navTop : TOP_MARGIN - 8;
-    const bottom = nav ? this.cssHeight : this.densityTop;
+    const { x0, x1, strip } = this.select;
+    const top = strip === "nav" ? this.navTop : strip === "map" ? MINIMAP_TOP : TOP_MARGIN - 8;
+    const bottom =
+      strip === "nav"
+        ? this.cssHeight
+        : strip === "map"
+          ? MINIMAP_TOP + MINIMAP_HEIGHT
+          : this.densityTop;
     ctx.save();
     ctx.globalAlpha = 0.22;
     ctx.fillStyle = palette().label;
@@ -514,6 +569,93 @@ class Timeline {
     ctx.restore();
   }
 
+  // All of history at a fixed linear scale, with the viewport marked and
+  // leader lines down to the detail view.
+  //
+  // The viewport is routinely a billionth of the total — far below a pixel —
+  // so the mark is floored at MINIMAP_MIN_MARK and given a caret. That floor
+  // is a deliberate lie about *width*, and the only one: the position is
+  // exact, the leader lines run to the true edges, and the caption says what
+  // fraction is really being shown. Without the floor there is nothing to see;
+  // without the caption the floor would overstate how much of time is on
+  // screen by a factor of a million.
+  drawMinimap() {
+    const { ctx, map } = this;
+    const pal = palette();
+    const W = this.cssWidth;
+    const top = MINIMAP_TOP;
+    const mid = top + MINIMAP_HEIGHT / 2;
+
+    ctx.save();
+    ctx.fillStyle = pal.plate;
+    ctx.fillRect(0, top, W, MINIMAP_HEIGHT);
+
+    // The track: the whole of time, to scale.
+    ctx.strokeStyle = pal.gridMajor;
+    ctx.beginPath();
+    ctx.moveTo(map.x(BIG_BANG), mid);
+    ctx.lineTo(map.x(NOW), mid);
+    ctx.stroke();
+
+    // Every item, so the shape of the data is visible — which on a linear axis
+    // means a dense clot at the right-hand end, honestly.
+    ctx.globalAlpha = 0.55;
+    for (const item of this.items) {
+      const { lo, hi } = itemYearRange(item);
+      const x = map.x(lo);
+      ctx.fillStyle = pal.cat[item.category] ?? pal.cat.other;
+      ctx.fillRect(x, mid - 4, Math.max(1, map.x(hi) - x), 8);
+    }
+    ctx.globalAlpha = 1;
+
+    const xa = map.x(Math.max(this.view.left, BIG_BANG));
+    const xb = map.x(Math.min(this.view.right, NOW));
+    const w = Math.max(MINIMAP_MIN_MARK, xb - xa);
+    const x0 = Math.min(xa, W - w);
+
+    // Leader lines out to the full width of the detail view below.
+    ctx.strokeStyle = pal.label;
+    ctx.globalAlpha = 0.35;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x0, top + MINIMAP_HEIGHT);
+    ctx.lineTo(0, AXIS_TOP);
+    ctx.moveTo(x0 + w, top + MINIMAP_HEIGHT);
+    ctx.lineTo(W, AXIS_TOP);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = pal.hoverLabel;
+    ctx.fillRect(x0, top + 2, w, MINIMAP_HEIGHT - 4);
+    // Caret, so a two-pixel mark is findable at a glance.
+    ctx.beginPath();
+    ctx.moveTo(x0 + w / 2, top - 1);
+    ctx.lineTo(x0 + w / 2 - 4, top - 7);
+    ctx.lineTo(x0 + w / 2 + 4, top - 7);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.font = MONO_FONT;
+    ctx.fillStyle = pal.axis;
+    ctx.textAlign = "left";
+    ctx.fillText("13.8 Ga", map.x(BIG_BANG), top - 10);
+    ctx.textAlign = "right";
+    ctx.fillText("now", map.x(NOW), top - 10);
+
+    // What fraction of history is actually on screen. This is the number the
+    // minimap exists to tell you, and the mark alone cannot.
+    const fraction = Math.min(this.view.span, FULL_SPAN_YEARS) / FULL_SPAN_YEARS;
+    const shown =
+      fraction >= 0.01
+        ? `${(fraction * 100).toFixed(0)}% of all time`
+        : `1 part in ${sigFigs(1 / fraction)} of all time`;
+    ctx.textAlign = "center";
+    ctx.fillText(shown, W / 2, top - 10);
+    ctx.font = UI_FONT;
+    ctx.restore();
+  }
+
   // The ends of time. The axis is padded past both, so without these the empty
   // margin looks like the timeline failed to draw rather than like the edge of
   // what there is.
@@ -526,7 +668,7 @@ class Timeline {
       const x = view.x(year);
       if (x < 0 || x > this.cssWidth) continue;
       ctx.beginPath();
-      ctx.moveTo(x, 24);
+      ctx.moveTo(x, AXIS_TOP);
       ctx.lineTo(x, this.densityTop);
       ctx.stroke();
     }
@@ -540,7 +682,7 @@ class Timeline {
       if (x < 0 || x > this.cssWidth) continue;
       ctx.strokeStyle = t.major ? palette().gridMajor : palette().gridMinor;
       ctx.beginPath();
-      ctx.moveTo(x, t.major ? 30 : 38);
+      ctx.moveTo(x, t.major ? AXIS_TOP : AXIS_TOP + 8);
       ctx.lineTo(x, this.densityTop);
       ctx.stroke();
       if (t.major) {
@@ -554,7 +696,7 @@ class Timeline {
         else ctx.textAlign = "center";
         const tx = ctx.textAlign === "left" ? 2 : ctx.textAlign === "right" ? this.cssWidth - 2 : x;
         ctx.fillStyle = palette().axis;
-        ctx.fillText(text, tx, 20);
+        ctx.fillText(text, tx, AXIS_TOP - 10);
         ctx.font = UI_FONT;
       }
     }
