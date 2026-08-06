@@ -19,7 +19,8 @@ import {
   ticks,
   linearTicks,
   itemYearRange,
-  placeLabel,
+  labelPlacements,
+  chooseLabelPlacement,
   computeLanes,
 } from "./scale.js";
 
@@ -101,26 +102,11 @@ export function invalidatePalette() {
 // Bands are computed in year space and then projected, so they warp correctly
 // under the log axis rather than being a fixed pixel width.
 //
-// Label placement lives in scale.js; see placeLabel for the three cases. The
-// returned left/right are the full occupied span including the label, wherever
-// it ended up — lane packing needs that, not just the band bounds.
-function extent(view, item, ctx) {
+// The band on screen. Label placement is decided later, in one pass over the
+// frame, because it depends on what the neighbours in the lane took.
+function bandExtent(view, item) {
   const { lo, hi } = itemYearRange(item);
-  const x0 = view.x(lo);
-  const x1 = view.x(hi);
-  const labelWidth = ctx.measureText(item.label).width;
-  const { labelX, flip, pinned } = placeLabel(x0, x1, labelWidth, view.width);
-
-  return {
-    x0,
-    x1,
-    flip,
-    pinned,
-    labelX,
-    labelWidth,
-    left: Math.min(x0, labelX),
-    right: Math.max(x1, labelX + labelWidth),
-  };
+  return { x0: view.x(lo), x1: view.x(hi) };
 }
 
 // Lane assignment is global and pan-invariant — see computeLanes in scale.js.
@@ -411,16 +397,44 @@ class Timeline {
 
     const lanes = this.lanesFor(ctx);
     const maxLanes = Math.floor((this.densityTop - TOP_MARGIN) / LANE_HEIGHT);
+    // What each lane has already given away this frame: the bands, which are
+    // fixed, and the labels claimed by more notable items. Iteration is in
+    // notability order, so the important labels choose first.
+    const taken = new Map();
     this.placed = [];
     for (const item of this.items) {
       const lane = lanes.get(item.qid);
       // Beyond LANE_LIMIT, or below the fold of this window.
       if (lane === undefined || lane >= maxLanes) continue;
-      const e = extent(this.view, item, ctx);
+      const { x0, x1 } = bandExtent(this.view, item);
       // Cull on the band, not the label span. A span reaching in from off-screen
       // is still visible; a band entirely past an edge is not.
-      if (e.x1 < 0 || e.x0 > W) continue;
-      this.placed.push({ item, lane, ...e });
+      if (x1 < 0 || x0 > W) continue;
+
+      const labelWidth = this.labelWidth(item, ctx);
+      const occupied = taken.get(lane) ?? [];
+      const spot = chooseLabelPlacement(
+        labelPlacements(x0, x1, labelWidth, W),
+        labelWidth,
+        occupied,
+      );
+      // A pinned label sits inside its own band, so that band must not be
+      // listed as blocking it — hence claiming happens after choosing.
+      occupied.push([x0, x1]);
+      if (spot) occupied.push([spot.labelX, spot.labelX + labelWidth]);
+      taken.set(lane, occupied);
+
+      this.placed.push({
+        item,
+        lane,
+        x0,
+        x1,
+        labelWidth,
+        labelX: spot?.labelX ?? null,
+        pinned: spot?.pinned ?? false,
+        left: Math.min(x0, spot?.labelX ?? x0),
+        right: Math.max(x1, (spot?.labelX ?? x1) + (spot ? labelWidth : 0)),
+      });
     }
     for (const p of this.placed) this.drawItem(p);
 
@@ -555,9 +569,10 @@ class Timeline {
       ctx.fill();
     }
 
-    // A label that does not fit on either side is omitted rather than drawn and
-    // sliced by the canvas edge. The marker stays, and hovering still names it.
-    if (p.labelX < 0 || p.labelX + p.labelWidth > this.cssWidth) return;
+    // No free spot, or none that fits on canvas: the label is omitted rather
+    // than drawn over a neighbour or sliced by the edge. The band stays, and
+    // hovering still names it.
+    if (p.labelX === null) return;
 
     // A pinned label sits on top of the band's own fill rather than on empty
     // canvas, so it needs a backing plate to stay readable. The plate token is

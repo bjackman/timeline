@@ -22,6 +22,8 @@ import {
   PRECISION_HALF_WIDTH_YEARS,
   itemYearRange,
   placeLabel,
+  labelPlacements,
+  chooseLabelPlacement,
   LABEL_GAP,
   LABEL_MARGIN,
   LinearView,
@@ -422,6 +424,48 @@ check("span formats as Gy", formatSpan(13.8e9).endsWith("Gy"));
 check("span formats as My", formatSpan(5e6).endsWith("My"));
 check("span formats as ky", formatSpan(5e3).endsWith("ky"));
 check("span formats as days below a month", formatSpan(1 / 365).endsWith("d"));
+
+// --- label placement against neighbours -----------------------------------
+// Lane packing assumes a label sits to the right, because it has to assume
+// something to stay pan-invariant. A label that flips left at the canvas edge
+// therefore lands where a neighbour already is, unless something checks.
+
+{
+  const p = labelPlacements(300, 400, 80, 1000);
+  check("preferred placement is to the right", p[0].labelX === 400 + LABEL_GAP);
+  check("a flip is offered as the fallback", p[1].flip === true);
+  check("pinning is offered last", p[p.length - 1].pinned === true);
+}
+
+{
+  // Nothing in the way: the first choice stands.
+  const chosen = chooseLabelPlacement(labelPlacements(300, 400, 80, 1000), 80, []);
+  check("an unobstructed label takes its first choice", chosen.labelX === 408);
+}
+
+{
+  // The clash: a band near the right edge can only flip left, into a
+  // neighbour. The neighbour was placed first, so this one must move on.
+  const placements = labelPlacements(900, 950, 80, 1000);
+  check("near the right edge, flipping is the only option", placements.length === 2);
+  const neighbour = [[790, 890]];
+  const chosen = chooseLabelPlacement(placements, 80, neighbour);
+  check("a flip that would land on a neighbour is rejected", chosen?.flip !== true);
+}
+
+{
+  // Everything taken: the label is dropped rather than drawn over something.
+  const chosen = chooseLabelPlacement(labelPlacements(900, 950, 80, 1000), 80, [[0, 1000]]);
+  check("a label with nowhere free is dropped", chosen === null);
+}
+
+{
+  // A pinned label sits inside its own band, so the band must not block it.
+  const placements = labelPlacements(-500, 1500, 80, 1000);
+  check("a viewport-spanning band offers only pinning", placements.length === 1);
+  check("...and it is chosen when the lane is otherwise clear",
+    chooseLabelPlacement(placements, 80, []) !== null);
+}
 
 // --- lane assignment ------------------------------------------------------
 // The property under test is that a lane depends on the zoom and on nothing
