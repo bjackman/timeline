@@ -150,6 +150,64 @@ EXCLUDED  Middle Ages       EXCLUDED  Jurassic
 kept      French Revolution kept      history of architecture
 ```
 
+## The P279* closure is cheap over VALUES, and worth caching
+
+Measured 2026-08-06. Fetching the full superclass closure for the 377 distinct
+`P31` types in the 525-item slice:
+
+| pass | shape | cost |
+| --- | --- | --- |
+| closures | `VALUES ?type {50 QIDs} ?type wdt:P279* ?anc` | 8 queries, none slow |
+| labels | `VALUES ?item {100 QIDs}` + label service | 16 queries, one 502 (retried fine) |
+
+Closure sizes: min 2, median 36, max 132 ancestors per type. The whole thing is
+~250 KB of JSON for 377 types, which is why it is cached in
+`data/type-closures.json` rather than re-queried: **classification rules need
+tuning, and tuning against live queries means re-querying on every edit.** With
+the closures on disk a tuning round is instant and offline.
+
+Do not add the label service to the closure query itself. It would label `?anc`
+too, multiplying an already large result set. Labels come from a second bounded
+pass over the distinct ancestor set — the same anchor-then-enrich shape as the
+rest of the pipeline.
+
+## Wikidata's upper ontology is useless for classification
+
+Measured 2026-08-06. The most common ancestors across the slice, by number of
+items that reach them:
+
+| items | QID | label |
+| --- | --- | --- |
+| 515 | Q35120 | entity |
+| 413 | Q99527517 | collective entity |
+| 374 | Q488383 | object |
+| 289 | Q246672 | mathematical object |
+| 259 | Q67518978 | occurrent |
+| 137 | Q748349 | mathematical structure |
+| 88 | Q179899 | topological space |
+
+That is 88 of 525 historical events reaching "topological space". Sense
+collision is the rule, not the exception, and it does not stop at the top:
+
+- `Q3505845` "state" reaches **104** items, almost none of them political — it
+  is state-of-a-system, not statehood.
+- `Q2424752` "product" reaches **100**, including every film and album.
+- `Q123691918` "tool" reaches every currency in the slice.
+- `Q1047113` "field of study" reaches 69.
+
+**Choose roots by measuring which ancestors actually occur in the data, not by
+browsing the ontology downward.** A root that looks specific from its label may
+sit above a whole sense you did not intend. See `docs/decisions.md` for the
+rules this produced and the four that were measured and thrown away.
+
+## Some items have no P31 at all
+
+`oven`, `torch`, `sickle` and `beer` are in the slice with a date and an enwiki
+article and an **empty** `typeQids`. No classification rule can reach them —
+there is nothing to classify. Worth remembering before writing a rule aimed at
+a cluster you can see in the output: check the cluster actually has types
+first.
+
 ## Notability ranking surfaces non-events
 
 Ranking by sitelink count, the top of an unfiltered slice is: dog (332

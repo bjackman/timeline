@@ -146,6 +146,12 @@ guess did not survive contact with the work. See `docs/decisions.md`.
   rendered on a log axis with zoom, pan, precision bands, category filters and a
   density strip. Proved the zoom UX, which was the risky part. See
   `docs/decisions.md` for what it does not do yet.
+- **v0.1 — done.** Category classification via the `P279*` closure, replacing
+  the keyword placeholder. Done before the harvest rather than after, because
+  categories are assigned at fetch time: harvesting millions of items under
+  rules that misfile 40% of them bakes the mistake into every tile. The
+  closures are cached, so re-tuning never re-queries and re-classifying never
+  re-harvests.
 - **v1** — full sharded harvest, tiling, notability ranking.
 - **v2** — category filters, search, preview cards.
 - **v3** — dump-based completeness pass, pageview ranking, images, other

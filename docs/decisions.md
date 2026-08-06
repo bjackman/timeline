@@ -7,6 +7,75 @@ Newest first.
 
 ---
 
+## Categories: P279* closure, ordered rules, cached offline
+
+**Chosen:** classify each item by expanding its `P31` types to their full
+`P279*` superclass closure and matching against an **ordered flat list** of
+root QIDs (`tools/categorise.mjs`). The closures are fetched once and cached in
+`data/type-closures.json`; the classification itself is pure and offline.
+
+**Rejected:** the keyword-substring rules this replaces. Measured on the same
+525-item slice: **40.4% of items in `other`**, `science` with 2 items, and
+`geology` inflated to 62 by a rule matching the word "period" or "age" in any
+type label. After the closure rules: **14.5% other**, and the categories mean
+what they say. Full before/after:
+
+| category | keyword rules | closure rules |
+| --- | --- | --- |
+| conflict | 66 | 82 |
+| disaster | 9 | 15 |
+| life | 113 | 120 |
+| geology | 62 | 15 |
+| politics | 26 | 55 |
+| science | 2 | 4 |
+| culture | 23 | 80 |
+| sport | 12 | 31 |
+| period | 0 | 47 |
+| other | **212** | **76** |
+
+**Rejected: a map of category -> roots.** The priority that matters is between
+individual roots, not between categories. A war is also a historical period; an
+Olympic Games edition is also a recurring event; a historical country is both a
+polity and a period. A flat ordered list makes those precedences explicit and
+testable, and `tools/test-categories.mjs` pins the ambiguous cases so that
+reordering to fix one cannot silently regress another.
+
+**Rejected: four broad "last resort" roots**, tried at the very end of the list
+where they could only catch leftovers, to drain the residual `other`. Each was
+measured and removed — the numbers are in `tools/categorise.mjs`, kept next to
+the code so they are not re-derived:
+
+| root | what it actually caught |
+| --- | --- |
+| `Q2424752` product | Titanic, Oktoberfest, April Fools' Day, hamburger |
+| `Q123691918` tool | every currency in the slice, filed as science |
+| `Q42240` research | Hellenistic period, via "middle chronology" |
+| `Q11862829` academic discipline | early modern period, via "academic major" |
+| `Q336` science | Hellenistic period again, and pinyin — both its matches |
+
+Their target — the daily-life technology in `other` (oven, torch, sickle,
+beer) — turned out to be unreachable by any rule: those items carry no `P31`
+statement at all. A rule cannot fix missing data.
+
+**Why the closures are cached rather than queried during classification:** the
+rules are the part that changes. With the closures on disk, a tuning round is
+`recategorise.mjs --dry-run`, an edit, and a re-run — offline, instant, and
+zero load on WDQS. The slice stores each item's `typeQids`, so re-classifying
+never requires re-harvesting either.
+
+**Accepted imprecision:** `Q10931` revolution is filed under conflict, which is
+right for the American, French, Russian, Iranian, Glorious and October
+revolutions and wrong for the Neolithic Revolution — 1 of 9 in the slice.
+Dropping the rule loses eight correct classifications to fix one, so it stays.
+Terrorist attacks and assassinations currently land in `disaster` rather than
+`conflict`; defensible either way, not yet worth a rule.
+
+Each item also records `categoryVia`, the root QID that matched, so a
+surprising category can be traced to the rule that caused it without
+re-deriving anything.
+
+---
+
 ## Frontend: plain ES modules, no build step
 
 **Chosen:** plain JavaScript ES modules served statically.
@@ -139,10 +208,14 @@ Recorded so they are not rediscovered as bugs.
   both ends are off-screen has nowhere to put it, so it renders as an unlabelled
   full-width bar. The fix is to pin such labels to the viewport edge; not done
   yet.
-- **Category mapping is a keyword hack.** `CATEGORY_RULES` in
-  `tools/fetch-slice.mjs` matches substrings of P31 labels. It leaves ~40% of
-  items in `other` (dog, cat, astronomy, Latin all fall through). DESIGN.md
-  calls for a real `P279*` closure classification; that is v1 work.
+- ~~**Category mapping is a keyword hack.**~~ Fixed: `P279*` closure
+  classification, above. The residual `other` is 14.5% and is genuinely
+  miscellaneous — currencies, historical ethnic groups, archaeological sites,
+  scripts, and items with no `P31` at all. None of the ten categories fits
+  them, and forcing one would be worse than the honest fallthrough. At harvest
+  scale the residual is worth re-examining: settlements, buildings and
+  organisations will be large enough to deserve categories of their own, which
+  the ten-token palette does not yet have.
 - **`NOW` is a hardcoded constant** (`web/scale.js`). Fine for a timeline whose
   finest resolution is a day, wrong eventually.
 - **The slice is 525 items, not a corpus.** Bucket coverage is deliberately
@@ -208,11 +281,18 @@ the repo root — so a naive `$out` with `index.html` at the top would break. Th
 bundle has no fetch at all and sidesteps it, which is what DESIGN.md wants for
 deployment anyway. `apps.dev` still serves the working tree for iteration.
 
-**Not done: `flake.lock` is absent.** It could not be generated where this was
-written — GitHub was unreachable for repositories outside the project's own
-owner, so `nixpkgs` and `flake-utils` could not be resolved, and a lock pinning
-the mirrors used for verification would have been actively misleading. Run
-`nix flake lock` once locally.
+**`flake.lock` is now committed** (2026-08-06), generated against the real
+inputs — `nixpkgs` b7c2ada, `flake-utils` 11707dc — on a machine where GitHub
+was reachable. `nix flake check` passes there against the committed lock.
+
+Getting it required a workaround worth recording: nix's bundled libgit2 cannot
+read packfiles on a **virtiofs** mount, which is what `/mnt/src` is, so any
+`nix` command in the checkout fails with `object not found` on a commit that
+`git cat-file` resolves fine, plus a spurious "Git tree is dirty". Isolated by
+elimination — a fresh repo with loose objects works, a copy of this repo on
+ext4 works, and a copy left on virtiofs with its objects unpacked to loose also
+works. Use `nix ... 'path:/mnt/src/timeline'`, which skips the git fetcher
+entirely.
 
 The flake is otherwise verified rather than assumed: all outputs evaluated
 clean, `packages.standalone`, `packages.default` and `checks.scale-tests` all
