@@ -286,6 +286,19 @@ export function formatItemDate(item) {
 // Widest possible linear window: the whole of time.
 export const FULL_SPAN_YEARS = NOW - BIG_BANG;
 
+// Breathing room past each end of time, in pixels.
+//
+// Without it the present is a hard wall at the exact right edge, and the only
+// cursor position that keeps it in view while zooming is the final pixel:
+// anchor anywhere to its left and the present slides off to the right, so you
+// have to zoom and then pan back to find it again. A margin makes the newest
+// events something you can put the cursor on.
+//
+// Pixels rather than a fraction of the span, so the margin looks the same at
+// every zoom. It also gives the labels of present-day events somewhere to go
+// other than flipping left.
+export const EDGE_PAD_PX = 80;
+
 // A linear window over years — the main axis.
 //
 // State is (centre, span) rather than (left, right) so that x() subtracts
@@ -297,10 +310,25 @@ export const FULL_SPAN_YEARS = NOW - BIG_BANG;
 // Deliberately the same interface as the log View, so the renderer does not
 // know or care which projection it is drawing.
 export class LinearView {
-  constructor(width, centre = (BIG_BANG + NOW) / 2, span = FULL_SPAN_YEARS) {
+  constructor(width, centre = (BIG_BANG + NOW) / 2, span = null) {
     this.width = width;
     this.centre = centre;
-    this.span = span;
+    this.span = span ?? this.maxSpan();
+  }
+
+  // The margin in years at the current scale. Capped as a fraction of the
+  // canvas so a very narrow window cannot end up as all margin.
+  get padYears() {
+    return this.padPixels * (this.span / this.width);
+  }
+
+  get padPixels() {
+    return Math.min(EDGE_PAD_PX, this.width * 0.15);
+  }
+
+  // All of time plus a margin at each end. Zooming out stops here.
+  maxSpan() {
+    return FULL_SPAN_YEARS / (1 - (2 * this.padPixels) / this.width);
   }
 
   get left() {
@@ -319,16 +347,19 @@ export class LinearView {
     return this.centre + (x / this.width - 0.5) * this.span;
   }
 
-  // Keep the window inside [BIG_BANG, NOW], sliding rather than squashing —
-  // the same rigid-window rule the log view pans by.
+  // Keep the window inside [BIG_BANG, NOW] plus a margin, sliding rather than
+  // squashing — the same rigid-window rule the log view pans by.
   clamp() {
-    if (this.span >= FULL_SPAN_YEARS) {
-      this.span = FULL_SPAN_YEARS;
+    const max = this.maxSpan();
+    if (this.span >= max) {
+      this.span = max;
       this.centre = (BIG_BANG + NOW) / 2;
       return;
     }
-    if (this.left < BIG_BANG) this.centre = BIG_BANG + this.span / 2;
-    if (this.right > NOW) this.centre = NOW - this.span / 2;
+    // Read the margin after any span change, since it scales with the span.
+    const pad = this.padYears;
+    if (this.left < BIG_BANG - pad) this.centre = BIG_BANG - pad + this.span / 2;
+    if (this.right > NOW + pad) this.centre = NOW + pad - this.span / 2;
   }
 
   // Zoom about a fixed screen position, so whatever is under the cursor stays
@@ -336,7 +367,7 @@ export class LinearView {
   zoomAt(x, factor) {
     const anchor = this.yearAt(x);
     const span = Math.min(
-      FULL_SPAN_YEARS,
+      this.maxSpan(),
       Math.max(MIN_SPAN_YEARS, this.span * factor),
     );
     this.centre = anchor - (x / this.width - 0.5) * span;
@@ -354,7 +385,7 @@ export class LinearView {
   showRange(lo, hi, pad = 0.02) {
     const span = Math.max(MIN_SPAN_YEARS, (hi - lo) * (1 + pad * 2));
     this.centre = (lo + hi) / 2;
-    this.span = Math.min(FULL_SPAN_YEARS, span);
+    this.span = Math.min(this.maxSpan(), span);
     this.clamp();
   }
 }
@@ -456,9 +487,14 @@ export function linearTicks(view) {
   const step = niceStep(view.span / 8);
   if (!(step > 0) || !Number.isFinite(step)) return out;
 
+  // Clipped to real time: the margins past each end are not part of the
+  // timeline, and a tick labelled 2050 sitting beyond the present reads as a
+  // bug rather than as empty space.
+  const lo = Math.max(view.left, BIG_BANG);
+  const hi = Math.min(view.right, NOW);
   const minor = step / 5;
-  const first = Math.ceil(view.left / minor) * minor;
-  for (let y = first; y <= view.right; y += minor) {
+  const first = Math.ceil(lo / minor) * minor;
+  for (let y = first; y <= hi; y += minor) {
     // Integer index rather than a modulo on the accumulated float, which drifts.
     const isMajor = Math.abs(Math.round(y / step) * step - y) < minor / 2;
     out.push({ year: y, major: isMajor, step });
@@ -466,7 +502,7 @@ export function linearTicks(view) {
   // A window narrower than one nice step lands every candidate outside it. An
   // axis with no ticks at all is worse than one labelled only at its edges.
   if (out.length === 0) {
-    out.push({ year: view.left, major: true }, { year: view.right, major: true });
+    out.push({ year: lo, major: true, step }, { year: hi, major: true, step });
   }
   return out;
 }

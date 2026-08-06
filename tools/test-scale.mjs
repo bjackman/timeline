@@ -321,8 +321,10 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
 
 {
   const v = new LinearView(1000);
-  close("full view starts at the Big Bang", v.left, BIG_BANG, 1);
-  close("...and ends now", v.right, NOW, 1);
+  close("full view reaches the Big Bang, plus a margin", v.left, BIG_BANG - v.padYears, 1);
+  close("...and the present, plus a margin", v.right, NOW + v.padYears, 1);
+  close("the Big Bang sits one margin in from the left edge", v.x(BIG_BANG), v.padPixels, 0.5);
+  close("the present sits one margin in from the right edge", v.x(NOW), 1000 - v.padPixels, 0.5);
 
   // To scale: twice the duration, twice the pixels. This is the property the
   // log axis could not offer and the reason for the switch.
@@ -339,8 +341,11 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
 {
   // Zoom about the cursor: whatever is under it stays under it. Getting this
   // wrong is the classic "the map slides away while you zoom" bug.
+  // Interior positions only: at the very edges the window is already against
+  // its bounds, and the clamp is allowed to override the anchor rather than
+  // let the view drift into the margin. That case is asserted separately.
   const v = new LinearView(1000);
-  for (const x of [0, 137, 500, 999]) {
+  for (const x of [137, 500, 800]) {
     const before = v.yearAt(x);
     v.zoomAt(x, 0.5);
     const after = v.yearAt(x);
@@ -364,8 +369,41 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
   const v = new LinearView(1000);
   v.zoomAt(500, 1e-9);
   for (let i = 0; i < 100; i++) v.zoomAt(500, 4);
-  close("zoom out is capped at all of time", v.span, FULL_SPAN_YEARS, 1);
-  close("...and re-centres on the full range", v.left, BIG_BANG, 1);
+  close("zoom out is capped at all of time plus margins", v.span, v.maxSpan(), 1);
+  check("...which is a little more than time itself", v.span > FULL_SPAN_YEARS);
+  close("...and re-centres on the full range", v.centre, (BIG_BANG + NOW) / 2, 1);
+}
+
+{
+  // The complaint this margin exists for: zooming in on the newest events.
+  // Without a margin the present is a wall at the last pixel, so anchoring
+  // anywhere to its left slides it off screen and you have to pan back.
+  const v = new LinearView(1000);
+  const onThePresent = v.x(NOW);
+  check("the present is not jammed against the edge", onThePresent < 1000 - 10);
+  for (let i = 0; i < 40; i++) v.zoomAt(onThePresent, 0.7);
+  check("zooming on the present keeps it on screen", v.x(NOW) <= 1000 && v.x(NOW) > 0,
+    `x=${v.x(NOW)}`);
+  close("...and holds it under the cursor", v.x(NOW), onThePresent, 1);
+  check("...having actually zoomed in", v.span < 1e5, `span=${v.span}`);
+}
+
+{
+  // The margin is bounded: it is breathing room, not an endless future.
+  const v = new LinearView(1000);
+  v.zoomAt(990, 1e-7);
+  for (let i = 0; i < 50; i++) v.panPixels(-500);
+  check("panning cannot wander past the margin", v.right <= NOW + v.padYears + 1e-3,
+    `right=${v.right}, now+pad=${NOW + v.padYears}`);
+  check("...and the present stays visible", v.x(NOW) <= 1000);
+}
+
+{
+  // No ticks out in the margin: a "2050" label past the present reads as a bug.
+  const v = new LinearView(1000);
+  v.zoomAt(v.x(NOW), 1e-7);
+  const beyond = linearTicks(v).filter((t) => t.year > NOW + 1e-6 || t.year < BIG_BANG);
+  check("ticks never leave real time", beyond.length === 0, `${beyond.length} strays`);
 }
 
 {
@@ -376,9 +414,9 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
   v.zoomAt(500, 1e-6);
   const span = v.span;
   v.panPixels(1e9);
-  close("panning left stops at the Big Bang", v.left, BIG_BANG, 1e-3);
+  close("panning left stops one margin past the Big Bang", v.left, BIG_BANG - v.padYears, 1e-3);
   v.panPixels(-1e9);
-  close("panning right stops at the present", v.right, NOW, 1e-3);
+  close("panning right stops one margin past the present", v.right, NOW + v.padYears, 1e-3);
   close("...without changing the span", v.span, span, 1e-6);
 }
 

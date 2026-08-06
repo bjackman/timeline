@@ -394,6 +394,7 @@ class Timeline {
     ctx.textBaseline = "middle";
 
     this.drawAxis(H);
+    this.drawEdges();
 
     const lanes = this.lanesFor(ctx);
     const maxLanes = Math.floor((this.densityTop - TOP_MARGIN) / LANE_HEIGHT);
@@ -510,6 +511,25 @@ class Timeline {
     ctx.strokeStyle = pal.label;
     ctx.lineWidth = 1;
     ctx.strokeRect(x0 + 0.5, top + 0.5, Math.max(1, w - 1), NAV_HEIGHT - 1);
+    ctx.restore();
+  }
+
+  // The ends of time. The axis is padded past both, so without these the empty
+  // margin looks like the timeline failed to draw rather than like the edge of
+  // what there is.
+  drawEdges() {
+    const { ctx, view } = this;
+    ctx.save();
+    ctx.strokeStyle = palette().gridMajor;
+    ctx.setLineDash([2, 3]);
+    for (const year of [BIG_BANG, NOW]) {
+      const x = view.x(year);
+      if (x < 0 || x > this.cssWidth) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, 24);
+      ctx.lineTo(x, this.densityTop);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
