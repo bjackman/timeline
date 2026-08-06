@@ -559,13 +559,21 @@ class Timeline {
     const xb = nav.x(Math.min(this.view.right, NOW));
     const x0 = Math.min(xa, xb);
     const w = Math.max(NAV_MIN_WIDTH, Math.abs(xb - xa));
+    // Same restraint as the minimap: a wash with a soft edge, not a bright
+    // block. The strip is context, and context should not out-shout the data.
     ctx.fillStyle = pal.label;
-    ctx.globalAlpha = 0.18;
-    ctx.fillRect(x0, top, w, NAV_HEIGHT);
-    ctx.globalAlpha = 1;
     ctx.strokeStyle = pal.label;
     ctx.lineWidth = 1;
-    ctx.strokeRect(x0 + 0.5, top + 0.5, Math.max(1, w - 1), NAV_HEIGHT - 1);
+    if (w <= 3) {
+      ctx.globalAlpha = 0.45;
+      ctx.fillRect(x0, top, Math.max(NAV_MIN_WIDTH, w), NAV_HEIGHT);
+    } else {
+      ctx.globalAlpha = 0.09;
+      ctx.fillRect(x0, top, w, NAV_HEIGHT);
+      ctx.globalAlpha = 0.35;
+      ctx.strokeRect(x0 + 0.5, top + 0.5, Math.max(1, w - 1), NAV_HEIGHT - 1);
+    }
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
@@ -626,15 +634,31 @@ class Timeline {
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
-    ctx.fillStyle = pal.hoverLabel;
-    ctx.fillRect(x0, top + 2, w, MINIMAP_HEIGHT - 4);
+    // Two treatments, because one cannot serve both extremes. A mark hundreds
+    // of pixels wide wants to be a faint wash with an edge; a two-pixel mark
+    // has no interior to wash, so it needs a little more weight or it vanishes.
+    ctx.fillStyle = pal.label;
+    ctx.strokeStyle = pal.label;
+    ctx.lineWidth = 1;
+    if (w <= 3) {
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(x0, top + 2, Math.max(MINIMAP_MIN_MARK, w), MINIMAP_HEIGHT - 4);
+    } else {
+      ctx.globalAlpha = 0.1;
+      ctx.fillRect(x0, top + 2, w, MINIMAP_HEIGHT - 4);
+      ctx.globalAlpha = 0.4;
+      ctx.strokeRect(x0 + 0.5, top + 2.5, Math.max(1, w - 1), MINIMAP_HEIGHT - 5);
+    }
+
     // Caret, so a two-pixel mark is findable at a glance.
+    ctx.globalAlpha = 0.5;
     ctx.beginPath();
     ctx.moveTo(x0 + w / 2, top - 1);
-    ctx.lineTo(x0 + w / 2 - 4, top - 7);
-    ctx.lineTo(x0 + w / 2 + 4, top - 7);
+    ctx.lineTo(x0 + w / 2 - 3, top - 5);
+    ctx.lineTo(x0 + w / 2 + 3, top - 5);
     ctx.closePath();
     ctx.fill();
+    ctx.globalAlpha = 1;
 
     ctx.font = MONO_FONT;
     ctx.fillStyle = pal.axis;
