@@ -448,11 +448,19 @@ class Timeline {
 
     const lanes = this.lanesFor(ctx);
     const maxLanes = Math.floor((this.densityTop - TOP_MARGIN) / LANE_HEIGHT);
-    // What each lane has already given away this frame: the bands, which are
-    // fixed, and the labels claimed by more notable items. Iteration is in
-    // notability order, so the important labels choose first.
-    const taken = new Map();
-    this.placed = [];
+    // Bands first, labels second, and the order matters.
+    //
+    // A band's position is fixed by lane packing; a label's is not. If labels
+    // are placed as the bands are discovered, then a label chosen early can
+    // only avoid the bands found so far — so a notable item's label flips left
+    // onto the band of some less notable item that has not been reached yet,
+    // and that band cannot move out of the way. Measured across 405 viewports
+    // of the slice: 162 labels sitting on top of a bar.
+    //
+    // Collecting every band up front removes the possibility rather than
+    // narrowing it.
+    const visible = [];
+    const laneBands = new Map();
     for (const item of this.items) {
       const lane = lanes.get(item.qid);
       // Beyond LANE_LIMIT, or below the fold of this window.
@@ -461,19 +469,38 @@ class Timeline {
       // Cull on the band, not the label span. A span reaching in from off-screen
       // is still visible; a band entirely past an edge is not.
       if (x1 < 0 || x0 > W) continue;
+      const entry = { item, lane, x0, x1 };
+      visible.push(entry);
+      const bands = laneBands.get(lane) ?? [];
+      bands.push(entry);
+      laneBands.set(lane, bands);
+    }
 
+    // Still in notability order, so the labels that matter most choose first.
+    const laneLabels = new Map();
+    this.placed = [];
+    for (const entry of visible) {
+      const { item, lane, x0, x1 } = entry;
       const labelWidth = this.labelWidth(item, ctx);
-      const occupied = taken.get(lane) ?? [];
+
+      const occupied = [];
+      // Every band in the lane except this item's own — a pinned label sits
+      // inside its own band on purpose.
+      for (const other of laneBands.get(lane)) {
+        if (other !== entry) occupied.push([other.x0, other.x1]);
+      }
+      for (const rect of laneLabels.get(lane) ?? []) occupied.push(rect);
+
       const spot = chooseLabelPlacement(
         labelPlacements(x0, x1, labelWidth, W),
         labelWidth,
         occupied,
       );
-      // A pinned label sits inside its own band, so that band must not be
-      // listed as blocking it — hence claiming happens after choosing.
-      occupied.push([x0, x1]);
-      if (spot) occupied.push([spot.labelX, spot.labelX + labelWidth]);
-      taken.set(lane, occupied);
+      if (spot) {
+        const claimed = laneLabels.get(lane) ?? [];
+        claimed.push([spot.labelX, spot.labelX + labelWidth]);
+        laneLabels.set(lane, claimed);
+      }
 
       this.placed.push({
         item,

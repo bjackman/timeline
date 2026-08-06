@@ -498,6 +498,23 @@ check("span formats as days below a month", formatSpan(1 / 365).endsWith("d"));
 }
 
 {
+  // Bands block labels exactly as labels do. The renderer feeds in every band
+  // in the lane, including those of items it has not placed a label for yet:
+  // a band cannot move, so a label must be the one to give way. Placing labels
+  // as bands are discovered instead produced 162 labels sitting on a bar
+  // across 405 test viewports.
+  const bandToTheLeft = [[780, 895]];
+  const chosen = chooseLabelPlacement(labelPlacements(900, 950, 80, 1000), 80, bandToTheLeft);
+  check("a label blocked from flipping still finds a spot", chosen !== null);
+  check("...which is not the flip onto the band", chosen?.flip !== true);
+  check(
+    "...and does not overlap it",
+    chosen !== null && !(chosen.labelX < 895 && 780 < chosen.labelX + 80),
+    `labelX=${chosen?.labelX}`,
+  );
+}
+
+{
   // A pinned label sits inside its own band, so the band must not block it.
   const placements = labelPlacements(-500, 1500, 80, 1000);
   check("a viewport-spanning band offers only pinning", placements.length === 1);
