@@ -175,6 +175,82 @@ export function formatItemDate(item) {
 
 // The viewport: a window over u. uLeft is the older edge (larger u), uRight the
 // more recent (smaller u). Left is older, right is now.
+// Widest possible linear window: the whole of time.
+export const FULL_SPAN_YEARS = NOW - BIG_BANG;
+
+// A linear window over years — the main axis.
+//
+// State is (centre, span) rather than (left, right) so that x() subtracts
+// years *within* the window before scaling. That keeps float64's resolution
+// tied to the window rather than to the age of the universe: at 13.8 Ga the
+// representable increment is about 70 seconds, which is a million times finer
+// than the data's precision there, so no fixed-point arithmetic is needed.
+//
+// Deliberately the same interface as the log View, so the renderer does not
+// know or care which projection it is drawing.
+export class LinearView {
+  constructor(width, centre = (BIG_BANG + NOW) / 2, span = FULL_SPAN_YEARS) {
+    this.width = width;
+    this.centre = centre;
+    this.span = span;
+  }
+
+  get left() {
+    return this.centre - this.span / 2;
+  }
+
+  get right() {
+    return this.centre + this.span / 2;
+  }
+
+  x(year) {
+    return ((year - this.centre) / this.span) * this.width + this.width / 2;
+  }
+
+  yearAt(x) {
+    return this.centre + (x / this.width - 0.5) * this.span;
+  }
+
+  // Keep the window inside [BIG_BANG, NOW], sliding rather than squashing —
+  // the same rigid-window rule the log view pans by.
+  clamp() {
+    if (this.span >= FULL_SPAN_YEARS) {
+      this.span = FULL_SPAN_YEARS;
+      this.centre = (BIG_BANG + NOW) / 2;
+      return;
+    }
+    if (this.left < BIG_BANG) this.centre = BIG_BANG + this.span / 2;
+    if (this.right > NOW) this.centre = NOW - this.span / 2;
+  }
+
+  // Zoom about a fixed screen position, so whatever is under the cursor stays
+  // under the cursor. factor > 1 zooms out.
+  zoomAt(x, factor) {
+    const anchor = this.yearAt(x);
+    const span = Math.min(
+      FULL_SPAN_YEARS,
+      Math.max(MIN_SPAN_YEARS, this.span * factor),
+    );
+    this.centre = anchor - (x / this.width - 0.5) * span;
+    this.span = span;
+    this.clamp();
+  }
+
+  panPixels(dx) {
+    this.centre -= (dx / this.width) * this.span;
+    this.clamp();
+  }
+
+  // Frame an explicit year range — what a drag-selection and the navigator
+  // both ultimately do. Padding keeps the selection off the canvas edges.
+  showRange(lo, hi, pad = 0.02) {
+    const span = Math.max(MIN_SPAN_YEARS, (hi - lo) * (1 + pad * 2));
+    this.centre = (lo + hi) / 2;
+    this.span = Math.min(FULL_SPAN_YEARS, span);
+    this.clamp();
+  }
+}
+
 export class View {
   constructor(width) {
     this.width = width;
@@ -261,6 +337,70 @@ export function ticks(view) {
     }
   }
   return out;
+}
+
+// Ticks for the linear axis: round year values, majors labelled, four minors
+// between them. Round *absolute* years rather than round durations-ago, since
+// on a linear axis a reader is looking for 1900 and 2000, not "126 years ago".
+// Deep-time labels still come out in Ga/Ma because formatYear converts.
+export function linearTicks(view) {
+  const out = [];
+  const step = niceStep(view.span / 8);
+  if (!(step > 0) || !Number.isFinite(step)) return out;
+
+  const minor = step / 5;
+  const first = Math.ceil(view.left / minor) * minor;
+  for (let y = first; y <= view.right; y += minor) {
+    // Integer index rather than a modulo on the accumulated float, which drifts.
+    const isMajor = Math.abs(Math.round(y / step) * step - y) < minor / 2;
+    out.push({ year: y, major: isMajor, step });
+  }
+  // A window narrower than one nice step lands every candidate outside it. An
+  // axis with no ticks at all is worse than one labelled only at its edges.
+  if (out.length === 0) {
+    out.push({ year: view.left, major: true }, { year: view.right, major: true });
+  }
+  return out;
+}
+
+// A tick label whose precision follows the tick STEP rather than the value's
+// magnitude.
+//
+// formatYear gives three significant figures, which is right for a hover card
+// and wrong for a linear axis: zoom to a 14,000-year window at 6.9 Ga and every
+// tick rounds to "6.90 Ga", so the axis shows six identical labels and the view
+// appears frozen. Deciding the decimals from the step guarantees adjacent ticks
+// differ — "6.903441 Ga" and "6.903443 Ga" — which is the whole job of an axis.
+export function formatTickYear(year, step) {
+  const ago = NOW - year;
+  const unit = ago >= 1e9 ? 1e9 : ago >= 1e6 ? 1e6 : 0;
+  if (unit) {
+    const decimals = Math.min(9, Math.max(0, Math.ceil(Math.log10(unit / step))));
+    return `${(ago / unit).toFixed(decimals)} ${unit === 1e9 ? "Ga" : "Ma"}`;
+  }
+  // Sub-year steps: without decimals every tick in a six-month window reads as
+  // the same year. Not a date yet — that is worth doing properly later.
+  if (step < 1) {
+    const decimals = Math.min(6, Math.ceil(Math.log10(1 / step)));
+    return year < 0 ? `${(-year).toFixed(decimals)} BCE` : year.toFixed(decimals);
+  }
+  if (year < 0) return `${Math.round(-year).toLocaleString("en-US")} BCE`;
+  return String(Math.round(year));
+}
+
+// A duration, for the scale readout. This is what makes "to scale" legible
+// rather than merely true: the number that says one pixel is nine million
+// years is the whole reason to use a linear axis.
+export function formatSpan(years) {
+  const y = Math.abs(years);
+  if (y >= 1e9) return `${sig3(y / 1e9)} Gy`;
+  if (y >= 1e6) return `${sig3(y / 1e6)} My`;
+  if (y >= 1e3) return `${sig3(y / 1e3)} ky`;
+  if (y >= 1) return `${sig3(y)} y`;
+  // A twelfth of a year, not a 365th: below one month, days are the unit a
+  // reader wants, and "0.0329 mo" is not a duration anyone recognises.
+  if (y >= 1 / 12) return `${sig3(y * 12)} mo`;
+  return `${sig3(y * 365)} d`;
 }
 
 export function niceStep(raw) {

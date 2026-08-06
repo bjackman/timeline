@@ -9,9 +9,15 @@
 
 import {
   View,
+  LinearView,
+  BIG_BANG,
+  NOW,
   formatYear,
+  formatTickYear,
+  formatSpan,
   formatItemDate,
   ticks,
+  linearTicks,
   itemYearRange,
   placeLabel,
 } from "./scale.js";
@@ -33,6 +39,29 @@ const LANE_HEIGHT = 22;
 const MARKER_RADIUS = 3.5;
 const TOP_MARGIN = 56;
 const DENSITY_HEIGHT = 46;
+
+// The navigator: a logarithmic strip showing all of time at once, with the
+// linear window marked on it. Log is genuinely good at "everything at once"
+// and genuinely bad at "to scale", so it does the first job while the main
+// axis does the second. Dragging across it changes scale exponentially, which
+// is what makes it a navigation device and not just a mini-map.
+const NAV_HEIGHT = 34;
+const NAV_GAP = 8;
+const NAV_MIN_WIDTH = 3;
+
+// Wheel zoom. The base rate is what v0 used; holding a scroll gesture ramps it
+// up to ACCEL_MAX, so a flick crosses orders of magnitude while a single notch
+// still nudges. 5e12 is the full zoom range, so a fixed rate cannot serve both.
+const WHEEL_RATE = 0.0015;
+const WHEEL_ACCEL_MAX = 5;
+const WHEEL_ACCEL_PER_EVENT = 0.5;
+const WHEEL_ACCEL_WINDOW_MS = 180;
+// Trackpad pinch arrives as ctrl+wheel with much smaller deltas.
+const PINCH_RATE = 0.012;
+
+// Vertical drag zoom, Google-Earth style: pixels of drag per e-fold.
+const DRAG_ZOOM_PIXELS_PER_EFOLD = 90;
+const DOUBLE_CLICK_ZOOM = 4;
 const UI_FONT = '12px system-ui, -apple-system, "Segoe UI", sans-serif';
 const MONO_FONT = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -139,64 +168,197 @@ class Timeline {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.cssWidth = rect.width;
     this.cssHeight = rect.height;
-    if (!this.view) this.view = new View(rect.width);
+    if (!this.view) this.view = new LinearView(rect.width);
     else this.view.width = rect.width;
+    // The navigator's own projection: log, fixed at the full extent, never
+    // zoomed. It is a fixed frame of reference — that is the point of it.
+    this.nav = new View(rect.width);
+  }
+
+  // Vertical layout, bottom-up: navigator, gap, density strip, then the lanes.
+  get navTop() {
+    return this.cssHeight - NAV_HEIGHT;
+  }
+
+  get densityTop() {
+    return this.navTop - NAV_GAP - DENSITY_HEIGHT;
   }
 
   applyFilter() {
     this.items = this.all.filter((i) => this.enabled.has(i.category));
   }
 
+  // Zoom rate that ramps while a scroll gesture continues. A fixed rate cannot
+  // serve a 5e12 zoom range: slow enough to place a decade precisely is far too
+  // slow to climb out to the Big Bang, and fast enough to climb is unusable up
+  // close. Ramping lets one gesture do both — keep scrolling and it accelerates.
+  wheelAccel(now) {
+    if (now - (this.lastWheelAt ?? 0) > WHEEL_ACCEL_WINDOW_MS) this.wheelRun = 0;
+    else this.wheelRun = (this.wheelRun ?? 0) + 1;
+    this.lastWheelAt = now;
+    return Math.min(WHEEL_ACCEL_MAX, 1 + this.wheelRun * WHEEL_ACCEL_PER_EVENT);
+  }
+
   bindEvents() {
     const c = this.canvas;
+    const at = (e) => {
+      const rect = c.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
 
     c.addEventListener(
       "wheel",
       (e) => {
         e.preventDefault();
-        const rect = c.getBoundingClientRect();
-        this.view.zoomAt(e.clientX - rect.left, Math.exp(e.deltaY * 0.0015));
+        const { x } = at(e);
+        // Trackpad pinch arrives as ctrl+wheel with much smaller deltas, and
+        // is already a deliberate zoom gesture, so it skips the ramp.
+        const rate = e.ctrlKey ? PINCH_RATE : WHEEL_RATE * this.wheelAccel(e.timeStamp);
+        this.view.zoomAt(x, Math.exp(e.deltaY * rate));
         this.render();
       },
       { passive: false },
     );
 
-    let lastX = 0;
+    // Right-drag is a zoom gesture, so the context menu has to go.
+    c.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    let last = { x: 0, y: 0 };
+    let anchorX = 0;
+
     c.addEventListener("pointerdown", (e) => {
-      this.dragging = true;
+      const p = at(e);
+      last = p;
+      anchorX = p.x;
       this.moved = false;
-      lastX = e.clientX;
       c.setPointerCapture(e.pointerId);
+
+      if (p.y >= this.navTop) {
+        // Navigator. Shift selects a range; otherwise grab and slide, jumping
+        // straight to wherever you pressed.
+        this.mode = e.shiftKey ? "nav-select" : "nav-drag";
+        if (this.mode === "nav-select") this.select = { x0: p.x, x1: p.x, nav: true };
+        else this.view.centre = this.nav.yearAt(p.x);
+      } else if (e.shiftKey) {
+        this.mode = "select";
+        this.select = { x0: p.x, x1: p.x, nav: false };
+      } else if (e.button === 2 || e.button === 1) {
+        this.mode = "zoom-drag";
+      } else {
+        this.mode = "pan";
+      }
+      this.view.clamp();
+      this.render();
     });
 
     c.addEventListener("pointermove", (e) => {
-      const rect = c.getBoundingClientRect();
-      if (this.dragging) {
-        const dx = e.clientX - lastX;
-        if (Math.abs(dx) > 2) this.moved = true;
-        lastX = e.clientX;
-        this.view.panPixels(dx);
-        this.render();
-        return;
+      const p = at(e);
+      const dx = p.x - last.x;
+      const dy = p.y - last.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) this.moved = true;
+
+      switch (this.mode) {
+        case "pan":
+          this.view.panPixels(dx);
+          break;
+        case "zoom-drag":
+          // Up zooms in. Continuous and exponential, so one long drag crosses
+          // as many orders of magnitude as you have screen for.
+          this.view.zoomAt(anchorX, Math.exp(dy / DRAG_ZOOM_PIXELS_PER_EFOLD));
+          break;
+        case "nav-drag":
+          this.view.centre = this.nav.yearAt(p.x);
+          this.view.clamp();
+          break;
+        case "select":
+        case "nav-select":
+          this.select.x1 = p.x;
+          break;
+        default:
+          last = p;
+          this.updateHover(p.x, p.y);
+          return;
       }
-      this.updateHover(e.clientX - rect.left, e.clientY - rect.top);
+      last = p;
+      this.render();
     });
 
     c.addEventListener("pointerup", (e) => {
-      this.dragging = false;
+      const p = at(e);
       c.releasePointerCapture(e.pointerId);
-      // A drag should not also open an article.
-      if (!this.moved && this.hover) {
-        window.open(
-          `https://en.wikipedia.org/wiki/${encodeURIComponent(this.hover.item.title)}`,
-          "_blank",
-          "noopener",
-        );
+
+      if (this.select) {
+        const { x0, x1, nav } = this.select;
+        const proj = nav ? this.nav : this.view;
+        // A stray shift-click is not a selection; ignore anything too narrow to
+        // be meant, rather than zooming to a one-pixel sliver of time.
+        if (Math.abs(x1 - x0) > 4) {
+          const a = proj.yearAt(Math.min(x0, x1));
+          const b = proj.yearAt(Math.max(x0, x1));
+          this.view.showRange(a, b);
+        }
+        this.select = null;
+      } else if (this.mode === "pan" && !this.moved && this.hover) {
+        // A drag should not also open an article — and neither should a
+        // double-click meant as zoom, which would otherwise fire this twice on
+        // the way past and open two tabs. Hold the open long enough for a
+        // second click to cancel it.
+        const { title } = this.hover.item;
+        this.pendingOpen = setTimeout(() => {
+          this.pendingOpen = null;
+          window.open(
+            `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+            "_blank",
+            "noopener",
+          );
+        }, 260);
       }
+      this.mode = null;
+      this.updateHover(p.x, p.y);
+      this.render();
+    });
+
+    c.addEventListener("dblclick", (e) => {
+      const { x, y } = at(e);
+      clearTimeout(this.pendingOpen);
+      this.pendingOpen = null;
+      if (y >= this.navTop) return;
+      const out = e.shiftKey || e.altKey;
+      this.view.zoomAt(x, out ? DOUBLE_CLICK_ZOOM : 1 / DOUBLE_CLICK_ZOOM);
+      this.render();
     });
 
     c.addEventListener("pointerleave", () => {
       this.hover = null;
+      this.render();
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.target !== document.body) return;
+      const centre = this.cssWidth / 2;
+      const step = this.cssWidth * 0.15;
+      switch (e.key) {
+        case "=":
+        case "+":
+          this.view.zoomAt(centre, 1 / 1.6);
+          break;
+        case "-":
+        case "_":
+          this.view.zoomAt(centre, 1.6);
+          break;
+        case "ArrowLeft":
+          this.view.panPixels(step);
+          break;
+        case "ArrowRight":
+          this.view.panPixels(-step);
+          break;
+        case "0":
+          this.view = new LinearView(this.cssWidth);
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
       this.render();
     });
 
@@ -230,30 +392,100 @@ class Timeline {
 
     this.drawAxis(H);
 
-    const maxLanes = Math.floor((H - TOP_MARGIN - DENSITY_HEIGHT) / LANE_HEIGHT);
+    const maxLanes = Math.floor((this.densityTop - TOP_MARGIN) / LANE_HEIGHT);
     this.placed = assignLanes(this.view, this.items, ctx, maxLanes);
     for (const p of this.placed) this.drawItem(p);
 
     this.drawDensity(H);
+    this.drawNavigator();
+    this.drawSelection();
     this.drawHoverCard();
     this.updateReadout();
   }
 
+  // The window being dragged out, drawn while the pointer is down. Without it
+  // a range selection is invisible until it has already happened.
+  drawSelection() {
+    if (!this.select) return;
+    const { ctx } = this;
+    const { x0, x1, nav } = this.select;
+    const top = nav ? this.navTop : TOP_MARGIN - 8;
+    const bottom = nav ? this.cssHeight : this.densityTop;
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = palette().label;
+    ctx.fillRect(Math.min(x0, x1), top, Math.abs(x1 - x0), bottom - top);
+    ctx.restore();
+  }
+
+  // All of time, on a log axis, with the linear window marked. The window is
+  // routinely a billionth of the total, so it is drawn with a floor width and
+  // a hairline at its centre — otherwise there is nothing to see or grab.
+  drawNavigator() {
+    const { ctx, nav } = this;
+    const pal = palette();
+    const top = this.navTop;
+    const W = this.cssWidth;
+
+    ctx.save();
+    ctx.fillStyle = pal.plate;
+    ctx.fillRect(0, top, W, NAV_HEIGHT);
+
+    ctx.strokeStyle = pal.gridMinor;
+    ctx.fillStyle = pal.axis;
+    ctx.font = MONO_FONT;
+    ctx.textAlign = "center";
+    for (const t of ticks(nav)) {
+      if (!t.major) continue;
+      const x = nav.x(t.year);
+      if (x < 0 || x > W) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, top + NAV_HEIGHT - 11);
+      ctx.lineTo(x, top + NAV_HEIGHT);
+      ctx.stroke();
+      ctx.fillText(formatYear(t.year), x, top + NAV_HEIGHT - 20);
+    }
+
+    // Every item as a one-pixel mark, so the strip shows where the data is.
+    ctx.globalAlpha = 0.5;
+    for (const item of this.items) {
+      const { lo, hi } = itemYearRange(item);
+      const x = nav.x(lo);
+      const w = Math.max(1, nav.x(hi) - x);
+      ctx.fillStyle = pal.cat[item.category] ?? pal.cat.other;
+      ctx.fillRect(x, top + 3, w, 4);
+    }
+    ctx.globalAlpha = 1;
+
+    const xa = nav.x(Math.max(this.view.left, BIG_BANG));
+    const xb = nav.x(Math.min(this.view.right, NOW));
+    const x0 = Math.min(xa, xb);
+    const w = Math.max(NAV_MIN_WIDTH, Math.abs(xb - xa));
+    ctx.fillStyle = pal.label;
+    ctx.globalAlpha = 0.18;
+    ctx.fillRect(x0, top, w, NAV_HEIGHT);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = pal.label;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, top + 0.5, Math.max(1, w - 1), NAV_HEIGHT - 1);
+    ctx.restore();
+  }
+
   drawAxis(H) {
     const { ctx, view } = this;
-    for (const t of ticks(view)) {
+    for (const t of linearTicks(view)) {
       const x = view.x(t.year);
       if (x < 0 || x > this.cssWidth) continue;
       ctx.strokeStyle = t.major ? palette().gridMajor : palette().gridMinor;
       ctx.beginPath();
       ctx.moveTo(x, t.major ? 30 : 38);
-      ctx.lineTo(x, H - DENSITY_HEIGHT);
+      ctx.lineTo(x, this.densityTop);
       ctx.stroke();
       if (t.major) {
         // Centred text gets sliced at the canvas edges, so nudge the outermost
         // labels inward and align them accordingly.
         ctx.font = MONO_FONT;
-        const text = formatYear(t.year);
+        const text = formatTickYear(t.year, t.step);
         const w = ctx.measureText(text).width;
         if (x - w / 2 < 2) ctx.textAlign = "left";
         else if (x + w / 2 > this.cssWidth - 2) ctx.textAlign = "right";
@@ -326,7 +558,7 @@ class Timeline {
   drawDensity(H) {
     const { ctx, view } = this;
     const W = this.cssWidth;
-    const yTop = H - DENSITY_HEIGHT;
+    const yTop = this.densityTop;
     const BIN = 4;
     const bins = new Array(Math.ceil(W / BIN)).fill(0);
     for (const item of this.items) {
@@ -352,11 +584,12 @@ class Timeline {
     // looking like complete coverage.
     ctx.font = MONO_FONT;
     const cw = ctx.measureText(caption).width;
+    const capY = yTop + DENSITY_HEIGHT - 9;
     ctx.fillStyle = palette().plate;
-    ctx.fillRect(4, H - 20, cw + 10, 17);
+    ctx.fillRect(4, capY - 8, cw + 10, 17);
     ctx.fillStyle = palette().axis;
     ctx.textAlign = "left";
-    ctx.fillText(caption, 9, H - 11);
+    ctx.fillText(caption, 9, capY);
     ctx.font = UI_FONT;
   }
 
@@ -403,9 +636,12 @@ class Timeline {
   updateReadout() {
     const el = document.getElementById("readout");
     if (!el) return;
-    el.textContent = `${formatYear(this.view.yearAt(0))} → ${formatYear(
-      this.view.yearAt(this.cssWidth),
-    )}`;
+    // The scale numbers are the reason for a linear axis: "1 px = 9.86 My" is
+    // what makes "to scale" legible rather than merely true.
+    const { span } = this.view;
+    el.textContent =
+      `${formatYear(this.view.yearAt(0))} → ${formatYear(this.view.yearAt(this.cssWidth))}` +
+      `  ·  span ${formatSpan(span)}  ·  ${formatSpan(span / this.cssWidth)}/px`;
   }
 }
 
@@ -441,7 +677,7 @@ async function main() {
   }
 
   document.getElementById("reset").onclick = () => {
-    tl.view = new View(tl.cssWidth);
+    tl.view = new LinearView(tl.cssWidth);
     tl.render();
   };
 

@@ -24,6 +24,11 @@ import {
   placeLabel,
   LABEL_GAP,
   LABEL_MARGIN,
+  LinearView,
+  FULL_SPAN_YEARS,
+  linearTicks,
+  formatTickYear,
+  formatSpan,
 } from "../web/scale.js";
 
 let passed = 0;
@@ -304,6 +309,116 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
   const { labelX } = placeLabel(-500, 1500, 1200, 1000);
   check("an over-wide label is left unplaceable", labelX < LABEL_MARGIN, `got ${labelX}`);
 }
+
+// --- linear view ----------------------------------------------------------
+// The main axis. Its whole reason to exist is that durations are proportional
+// to pixels, so that is what gets asserted first.
+
+{
+  const v = new LinearView(1000);
+  close("full view starts at the Big Bang", v.left, BIG_BANG, 1);
+  close("...and ends now", v.right, NOW, 1);
+
+  // To scale: twice the duration, twice the pixels. This is the property the
+  // log axis could not offer and the reason for the switch.
+  const px = (a, b) => v.x(b) - v.x(a);
+  close(
+    "equal durations are equal widths, anywhere on the axis",
+    px(-1e9, -0.9e9),
+    px(-5e9, -4.9e9),
+    1e-6,
+  );
+  close("double the duration is double the width", px(-2e9, -1.8e9), px(-1e9, -0.9e9) * 2, 1e-6);
+}
+
+{
+  // Zoom about the cursor: whatever is under it stays under it. Getting this
+  // wrong is the classic "the map slides away while you zoom" bug.
+  const v = new LinearView(1000);
+  for (const x of [0, 137, 500, 999]) {
+    const before = v.yearAt(x);
+    v.zoomAt(x, 0.5);
+    const after = v.yearAt(x);
+    // Relative tolerance: at 13.8 Ga a year is far below float resolution.
+    check(
+      `zoom holds the year under x=${x}`,
+      Math.abs(after - before) < Math.max(1, Math.abs(before) * 1e-9),
+      `${before} -> ${after}`,
+    );
+  }
+}
+
+{
+  const v = new LinearView(1000);
+  for (let i = 0; i < 200; i++) v.zoomAt(500, 0.5);
+  check("zoom in is floored at a day", v.span >= MIN_SPAN_YEARS, `got ${v.span}`);
+  check("...and does not collapse or go negative", v.span > 0 && Number.isFinite(v.span));
+}
+
+{
+  const v = new LinearView(1000);
+  v.zoomAt(500, 1e-9);
+  for (let i = 0; i < 100; i++) v.zoomAt(500, 4);
+  close("zoom out is capped at all of time", v.span, FULL_SPAN_YEARS, 1);
+  close("...and re-centres on the full range", v.left, BIG_BANG, 1);
+}
+
+{
+  // Panning is a rigid window: it stops at the edges rather than squashing.
+  // The pans are deliberately far larger than the whole axis, since the point
+  // is what happens when you run into the end of time.
+  const v = new LinearView(1000);
+  v.zoomAt(500, 1e-6);
+  const span = v.span;
+  v.panPixels(1e9);
+  close("panning left stops at the Big Bang", v.left, BIG_BANG, 1e-3);
+  v.panPixels(-1e9);
+  close("panning right stops at the present", v.right, NOW, 1e-3);
+  close("...without changing the span", v.span, span, 1e-6);
+}
+
+{
+  const v = new LinearView(1000);
+  v.showRange(-66e6, -65e6);
+  check("showRange frames the range", v.left < -66e6 && v.right > -65e6);
+  check("...snugly", v.span < 1.2e6, `got ${v.span}`);
+}
+
+// --- linear ticks and labels ----------------------------------------------
+
+{
+  // Across every decade of zoom the axis must stay populated but not explode.
+  const v = new LinearView(1000);
+  let worstLow = Infinity;
+  let worstHigh = 0;
+  for (let i = 0; i < 120; i++) {
+    const majors = linearTicks(v).filter((t) => t.major).length;
+    worstLow = Math.min(worstLow, majors);
+    worstHigh = Math.max(worstHigh, majors);
+    v.zoomAt(500, 0.75);
+  }
+  check("every zoom level has ticks", worstLow >= 1, `min ${worstLow}`);
+  check("no zoom level floods the axis", worstHigh <= 40, `max ${worstHigh}`);
+}
+
+{
+  // The bug that made a linear axis look frozen: three significant figures put
+  // every tick in a narrow deep-time window on the same label.
+  const step = 2000;
+  const a = formatTickYear(-6.9034412e9, step);
+  const b = formatTickYear(-6.9034432e9, step);
+  check("deep-time tick labels differ when the ticks do", a !== b, `${a} vs ${b}`);
+}
+
+check("tick labels use Ga in deep time", formatTickYear(-13e9, 1e9).endsWith("Ga"));
+check("tick labels use Ma in the Phanerozoic", formatTickYear(-5e8, 1e8).endsWith("Ma"));
+check("tick labels use BCE in recorded history", formatTickYear(-500, 100) === "500 BCE");
+check("tick labels use plain years in the CE era", formatTickYear(1900, 100) === "1900");
+
+check("span formats as Gy", formatSpan(13.8e9).endsWith("Gy"));
+check("span formats as My", formatSpan(5e6).endsWith("My"));
+check("span formats as ky", formatSpan(5e3).endsWith("ky"));
+check("span formats as days below a month", formatSpan(1 / 365).endsWith("d"));
 
 // --- report ---------------------------------------------------------------
 
