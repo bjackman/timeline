@@ -91,6 +91,17 @@
             node tools/test-scale.mjs | tee $out
           '';
 
+          # Category classification. Also pure and offline — it reads the
+          # committed slice and the committed closures — and it guards an
+          # ordering that is easy to break by accident, since fixing one
+          # classification by reordering the rules is how another regresses.
+          category-tests =
+            pkgs.runCommand "timeline-category-tests" { nativeBuildInputs = [ node ]; }
+              ''
+                cd ${src}
+                node tools/test-categories.mjs | tee $out
+              '';
+
           # Guards the bundler's own invariants — it refuses to emit output if
           # module syntax survives flattening or the script tag is not replaced.
           inherit standalone;
@@ -148,13 +159,52 @@
             '';
           };
 
-          # Also exposed as checks.scale-tests; this is the form you want while
-          # iterating, since it prints straight to the terminal.
+          # Fills in data/type-closures.json for any P31 type the category
+          # rules have not seen. fetch-slice does this itself for what it
+          # harvests, so this is for tuning against types outside the current
+          # slice. Needs network, hence an app.
+          fetch-closures = mkApp {
+            name = "timeline-fetch-closures";
+            description = "Fetch missing P279* type closures from Wikidata (needs network)";
+            runtimeInputs = [ node ];
+            text = ''
+              if [ ! -f tools/fetch-closures.mjs ]; then
+                echo "error: run this from the repository root" >&2
+                exit 1
+              fi
+              exec node tools/fetch-closures.mjs "$@"
+            '';
+          };
+
+          # Re-classify the slice from the cached closures. Offline and
+          # instant, which is the entire point of caching the closures: a
+          # tuning round costs nothing and hits WDQS zero times.
+          recategorise = mkApp {
+            name = "timeline-recategorise";
+            description = "Re-classify data/slice.json from cached closures (offline)";
+            runtimeInputs = [ node ];
+            text = ''
+              if [ ! -f tools/recategorise.mjs ]; then
+                echo "error: run this from the repository root" >&2
+                exit 1
+              fi
+              exec node tools/recategorise.mjs "$@"
+            '';
+          };
+
+          # Also exposed as checks.scale-tests and checks.category-tests; this
+          # is the form you want while iterating, since it prints straight to
+          # the terminal. Runs from ${src} because the category tests read the
+          # committed data files by relative path.
           test = mkApp {
             name = "timeline-test";
-            description = "Run the time-scale tests";
+            description = "Run the time-scale and category tests";
             runtimeInputs = [ node ];
-            text = ''exec node ${src}/tools/test-scale.mjs'';
+            text = ''
+              cd ${src}
+              node tools/test-scale.mjs
+              node tools/test-categories.mjs
+            '';
           };
         };
 
@@ -175,6 +225,8 @@
           shellHook = ''
             echo "timeline dev shell — node $(node --version)"
             echo "  node tools/test-scale.mjs        run the scale tests"
+            echo "  node tools/test-categories.mjs   run the category tests"
+            echo "  node tools/recategorise.mjs --dry-run   preview classification"
             echo "  python3 -m http.server 8000      then open /web/"
             echo "  node tools/build-standalone.mjs  -> dist/timeline.html"
           '';
