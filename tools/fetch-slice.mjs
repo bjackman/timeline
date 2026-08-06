@@ -11,17 +11,13 @@
 // docs/wdqs-notes.md before changing any of them.
 //
 // Usage: node tools/fetch-slice.mjs [--out data/slice.json] [--per-bucket 25]
+//                                   [--closures data/type-closures.json]
 
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-
-const ENDPOINT = "https://query.wikidata.org/sparql";
-const UA = "timeline-dev/0.1 (https://github.com/bjackman/timeline)";
-
-// Politeness. WDQS is volunteer-run infrastructure; a slow harvest that
-// completes beats a fast one that gets us blocked.
-const DELAY_MS = 1200;
-const MAX_RETRIES = 4;
+import { sparql, sleep, qidOf, argValue, DELAY_MS } from "./wdqs.mjs";
+import { ensureClosures, readCache, writeCache, DEFAULT_CLOSURE_PATH } from "./closures.mjs";
+import { classify } from "./categorise.mjs";
 
 // We filter by type *after* fetching, because doing it in SPARQL costs more
 // than it saves (see docs/wdqs-notes.md). Filtering after a LIMIT would leave
@@ -82,30 +78,6 @@ const EXCLUDE_TYPES = new Set([
   "Q235690",
 ]);
 
-// Provisional category mapping, keyed on P31 label substrings. This is a
-// placeholder for the P279* closure classification described in DESIGN.md —
-// good enough to make colour mean something in v0, not good enough to ship.
-const CATEGORY_RULES = [
-  [/\b(war|battle|siege|conflict|revolution|invasion|massacre)\b/i, "conflict"],
-  [/\b(extinction|earthquake|disaster|epidemic|pandemic|famine|eruption)\b/i, "disaster"],
-  [/\b(taxon|clade|species)\b/i, "life"],
-  [/\b(geological|epoch|era|period|age)\b/i, "geology"],
-  [/\b(election|treaty|country|state|empire|dynasty|monarch)\b/i, "politics"],
-  [/\b(discovery|invention|experiment|mission|spaceflight)\b/i, "science"],
-  [/\b(film|album|television|book|artwork|game)\b/i, "culture"],
-  [/\b(olympics|championship|tournament|season)\b/i, "sport"],
-  [/\b(historical period|historical country)\b/i, "period"],
-];
-
-function categorise(typeLabels) {
-  for (const label of typeLabels) {
-    for (const [re, cat] of CATEGORY_RULES) {
-      if (re.test(label)) return cat;
-    }
-  }
-  return "other";
-}
-
 // Wikidata time precision codes. Keep the whole scale — deep time uses the top
 // end and we must never render a "million years" value as a day.
 const PRECISION = {
@@ -132,40 +104,6 @@ const PRECISION = {
 function yearLiteral(year) {
   if (year < 0) return `-${String(-year).padStart(4, "0")}-01-01T00:00:00Z`;
   return `${String(year).padStart(4, "0")}-01-01T00:00:00Z`;
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function sparql(query) {
-  let lastErr;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      const backoff = 2000 * 2 ** (attempt - 1);
-      console.error(`    retry ${attempt} in ${backoff}ms (${lastErr})`);
-      await sleep(backoff);
-    }
-    try {
-      const res = await fetch(ENDPOINT, {
-        method: "POST",
-        headers: {
-          "User-Agent": UA,
-          Accept: "application/sparql-results+json",
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({ query }),
-        signal: AbortSignal.timeout(90_000),
-      });
-      if (res.status === 429 || !res.ok) {
-        lastErr = `HTTP ${res.status}`;
-        continue;
-      }
-      const json = await res.json();
-      return json.results.bindings;
-    } catch (e) {
-      lastErr = e.message;
-    }
-  }
-  throw new Error(`query failed after ${MAX_RETRIES} retries: ${lastErr}`);
 }
 
 // Anchor times: a point in time (P585) or a start time (P580). We take the
@@ -226,16 +164,10 @@ function parseTime(literal) {
   return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
 }
 
-const qidOf = (uri) => uri.split("/").pop();
-
-function argValue(args, name) {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
 async function main() {
   const args = process.argv.slice(2);
   const outPath = argValue(args, "--out") ?? "data/slice.json";
+  const closurePath = argValue(args, "--closures") ?? DEFAULT_CLOSURE_PATH;
   const perBucket = Number(argValue(args, "--per-bucket") ?? 25);
 
   const byQid = new Map();
@@ -268,6 +200,7 @@ async function main() {
           types: [],
           typeQids: [],
           category: "other",
+          categoryVia: null,
           start: t,
           startPrecision: Number(r.prec.value),
           startPrecisionName: PRECISION[Number(r.prec.value)] ?? "unknown",
@@ -313,7 +246,6 @@ async function main() {
       excluded.push(item);
       continue;
     }
-    item.category = categorise(item.types);
     kept.set(item.qid, item);
   }
 
@@ -327,6 +259,26 @@ async function main() {
   for (const [, list] of perBucketKept) {
     list.sort((a, b) => b.sitelinks - a.sitelinks);
     selected.push(...list.slice(0, perBucket));
+  }
+
+  // Categories, from the P279* closure of each item's P31 types. Done here
+  // rather than during the type pass so the closures are fetched only for
+  // items that survived trimming — the closure queries scale with the number
+  // of distinct types, and the discarded four-fifths contribute plenty.
+  //
+  // The cache is updated in place, so a re-harvest only pays for types it has
+  // not seen before, and tuning the rules afterwards costs nothing at all
+  // (tools/recategorise.mjs).
+  const closureCache = await readCache(closurePath);
+  await ensureClosures(
+    selected.flatMap((i) => i.typeQids),
+    closureCache,
+  );
+  await writeCache(closureCache, closurePath);
+  for (const item of selected) {
+    const { category, via } = classify(item.typeQids, closureCache.closures);
+    item.category = category;
+    item.categoryVia = via;
   }
 
   // End times only for what survived, to avoid wasting queries.
