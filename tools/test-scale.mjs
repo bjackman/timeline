@@ -20,6 +20,7 @@ import {
   niceStep,
   ticks,
   PRECISION_HALF_WIDTH_YEARS,
+  itemYearRange,
 } from "../web/scale.js";
 
 let passed = 0;
@@ -201,6 +202,64 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
   for (let i = 0; i < 40; i++) v.zoomAt(999, 0.5);
   const t = ticks(v);
   check("zoomed view produces a sane number of ticks", t.length > 0 && t.length < 200, `got ${t.length}`);
+}
+
+// --- item extents ---------------------------------------------------------
+// Each end of a span carries its own precision. Getting this wrong does not
+// look like a maths bug on screen, it looks like a mammoth that never went
+// extinct, which is why it survived v0.
+
+{
+  // Mammuthus: starts 5 Ma at million-year precision, ends 1800 BCE at century
+  // precision. The start's half-width is 500,000 years; applying it to the end
+  // put the band's right edge at year 498,200, past the present, where the
+  // axis clamps it.
+  const mammuthus = {
+    start: { year: -5_000_000 },
+    startPrecision: 3,
+    end: { year: -1800 },
+    endPrecision: 7,
+  };
+  const { lo, hi } = itemYearRange(mammuthus);
+  check("span start band uses the start precision", lo === -5_500_000, `got ${lo}`);
+  check("span end band uses the end precision", hi === -1750, `got ${hi}`);
+  check("an extinct genus does not reach the present", hi < NOW, `got ${hi}`);
+}
+
+{
+  // A point: the band is symmetric about the value, and nothing else.
+  const moon = { start: { year: 1969 }, startPrecision: 11, end: null };
+  const { lo, hi } = itemYearRange(moon);
+  close("point band is half a day back", lo, 1969 - 0.5 / 365, 1e-9);
+  close("point band is half a day forward", hi, 1969 + 0.5 / 365, 1e-9);
+}
+
+{
+  // A coarse point still gets a wide band — this is the "precision is not a
+  // timestamp" rule, and it must not be lost while fixing the span case.
+  const { lo, hi } = itemYearRange({
+    start: { year: -13_787_000_000 },
+    startPrecision: 3,
+    end: null,
+  });
+  check("deep-time point keeps its million-year band", hi - lo === 1e6, `got ${hi - lo}`);
+}
+
+{
+  // Missing end precision falls back to the start's rather than to a default.
+  const { hi } = itemYearRange({
+    start: { year: -400_000 },
+    startPrecision: 4,
+    end: { year: -300_000 },
+  });
+  check("end precision falls back to the start's", hi === -250_000, `got ${hi}`);
+}
+
+{
+  // An unknown precision code must not produce NaN and drag the item to the
+  // edge of the axis.
+  const { lo, hi } = itemYearRange({ start: { year: 1500 }, startPrecision: 99, end: null });
+  check("unknown precision code is finite", Number.isFinite(lo) && Number.isFinite(hi));
 }
 
 // --- report ---------------------------------------------------------------

@@ -45,6 +45,32 @@ export const PRECISION_HALF_WIDTH_YEARS = {
   14: 0.5 / 31536000,
 };
 
+// The full extent of an item in years: its nominal value plus the uncertainty
+// band at each end.
+//
+// The two ends carry their own precision and each must use its own. Mammuthus
+// is the case that proves it: the genus starts at 5 Ma (precision 3, a band a
+// million years wide) and ends in 1800 BCE (precision 7, a band one century
+// wide). Applying the start's half-width to the end put the end of its band at
+// year 498,200 — which the axis clamps to the present, so the mammoth rendered
+// as though it were still with us. 60 of the 274 spans in the v0 slice were
+// wrong this way and four of them ran to the present day.
+//
+// A missing endPrecision falls back to the start's rather than to a default,
+// since the two ends of one statement usually share a precision. The fetcher
+// always writes both, so this only matters for malformed input.
+export function itemYearRange(item) {
+  const startHalf = PRECISION_HALF_WIDTH_YEARS[item.startPrecision] ?? 0.5;
+  const startYear = item.start.year;
+  if (!item.end) return { lo: startYear - startHalf, hi: startYear + startHalf };
+
+  const endHalf = PRECISION_HALF_WIDTH_YEARS[item.endPrecision ?? item.startPrecision] ?? 0.5;
+  return {
+    lo: Math.min(startYear - startHalf, item.end.year - endHalf),
+    hi: Math.max(item.end.year + endHalf, startYear + startHalf),
+  };
+}
+
 export const yearsAgo = (year) => NOW - year;
 
 // The internal coordinate. +1 keeps log10 finite at the present; the clamp

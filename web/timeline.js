@@ -7,13 +7,7 @@
 //
 // Left is older, right is now.
 
-import {
-  View,
-  formatYear,
-  formatItemDate,
-  ticks,
-  PRECISION_HALF_WIDTH_YEARS,
-} from "./scale.js";
+import { View, formatYear, formatItemDate, ticks, itemYearRange } from "./scale.js";
 
 const CATEGORIES = [
   "conflict",
@@ -76,11 +70,9 @@ export function invalidatePalette() {
 // the label, whichever side it ended up on — lane packing needs that, not just
 // the marker bounds.
 function extent(view, item, ctx) {
-  const half = PRECISION_HALF_WIDTH_YEARS[item.startPrecision] ?? 0.5;
-  const startYear = item.start.year;
-  const endYear = item.end ? item.end.year : startYear;
-  const x0 = view.x(Math.min(startYear - half, endYear));
-  const x1 = view.x(Math.max(endYear + half, startYear));
+  const { lo, hi } = itemYearRange(item);
+  const x0 = view.x(lo);
+  const x1 = view.x(hi);
   const labelWidth = ctx.measureText(item.label).width;
 
   const flip = x1 + 8 + labelWidth > view.width - 4 && x0 - 8 - labelWidth > 0;
