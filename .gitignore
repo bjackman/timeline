@@ -5,3 +5,6 @@ package.json
 # Derived: regenerate with `node tools/build-standalone.mjs`. Not committed
 # because it embeds a copy of data/slice.json and would go stale silently.
 dist/
+
+# `nix build` output symlink.
+result
