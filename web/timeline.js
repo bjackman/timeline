@@ -79,6 +79,10 @@ const PINCH_RATE = 0.012;
 // Vertical drag zoom, Google-Earth style: pixels of drag per e-fold.
 const DRAG_ZOOM_PIXELS_PER_EFOLD = 90;
 const DOUBLE_CLICK_ZOOM = 4;
+
+// How long the card survives after the pointer leaves the item: long enough to
+// travel from the item to the card, short enough not to linger.
+const CARD_HIDE_MS = 260;
 const UI_FONT = '12px system-ui, -apple-system, "Segoe UI", sans-serif';
 const MONO_FONT = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -160,6 +164,8 @@ class Timeline {
     this.dragging = false;
     this.labelPx = new Map();
     this.laneCache = null;
+    this.card = document.getElementById("card");
+    this.hideTimer = null;
     this.resize();
     this.bindEvents();
   }
@@ -381,9 +387,15 @@ class Timeline {
     });
 
     c.addEventListener("pointerleave", () => {
-      this.hover = null;
-      this.render();
+      if (this.hover) this.scheduleHide();
     });
+
+    // Hovering the card keeps it: it is the only route to the Wikidata link,
+    // and a card that vanishes when you reach for it is not a card.
+    if (this.card) {
+      this.card.addEventListener("pointerenter", () => this.keepCard());
+      this.card.addEventListener("pointerleave", () => this.scheduleHide());
+    }
 
     window.addEventListener("keydown", (e) => {
       if (e.target !== document.body) return;
@@ -422,16 +434,26 @@ class Timeline {
 
   updateHover(x, y) {
     const prev = this.hover?.item?.qid;
-    this.hover = null;
+    let found = null;
     for (const p of this.placed ?? []) {
       const yTop = TOP_MARGIN + p.lane * LANE_HEIGHT;
       if (y >= yTop && y <= yTop + LANE_HEIGHT - 4 && x >= p.left - 6 && x <= p.right) {
-        this.hover = p;
+        found = p;
         break;
       }
     }
-    this.canvas.style.cursor = this.hover ? "pointer" : "grab";
-    if (this.hover?.item?.qid !== prev) this.render();
+    this.canvas.style.cursor = found ? "pointer" : "grab";
+
+    if (found) {
+      this.keepCard();
+      this.hover = found;
+      this.updateCard();
+      if (found.item.qid !== prev) this.render();
+    } else if (this.hover && !this.hideTimer) {
+      // Keep the card and the item's highlight alive for a moment, in case the
+      // pointer is on its way to the card.
+      this.scheduleHide();
+    }
   }
 
   render() {
@@ -519,7 +541,6 @@ class Timeline {
     this.drawDensity(H);
     this.drawNavigator();
     this.drawSelection();
-    this.drawHoverCard();
     this.updateReadout();
   }
 
@@ -849,44 +870,59 @@ class Timeline {
     ctx.font = UI_FONT;
   }
 
-  drawHoverCard() {
-    if (!this.hover) return;
-    const { ctx } = this;
+  // The hover card is a DOM element, not canvas. Two reasons: it holds real
+  // links, which a canvas cannot; and the browser lays the text out, which
+  // removes a whole class of bug. The canvas version measured the title in one
+  // font and painted it in a heavier one, so long titles — "Sustainable
+  // Development Goals" — ran straight out of the box that had been sized for
+  // them.
+  updateCard() {
+    const card = this.card;
+    if (!card) return;
+    if (!this.hover) {
+      card.hidden = true;
+      return;
+    }
     const { item } = this.hover;
-    const lines = [
-      item.label,
-      formatItemDate(item),
-      `${item.category} · ${item.sitelinks} language versions`,
-    ];
-    const fonts = [UI_FONT, MONO_FONT, MONO_FONT];
-    const w =
-      Math.max(
-        ...lines.map((l, i) => {
-          ctx.font = fonts[i];
-          return ctx.measureText(l).width;
-        }),
-      ) + 20;
-    const h = lines.length * 17 + 14;
-    const x = Math.max(8, Math.min(this.hover.x0 + 12, this.cssWidth - w - 8));
+    if (card.dataset.qid !== item.qid) {
+      card.dataset.qid = item.qid;
+      card.querySelector(".card-title").textContent = item.label;
+      card.querySelector(".card-meta").textContent =
+        `${formatItemDate(item)}\n${item.category} · ${item.sitelinks} language versions`;
+      card.querySelector(".card-wp").href =
+        `https://en.wikipedia.org/wiki/${encodeURIComponent(item.title)}`;
+      card.querySelector(".card-wd").href = `https://www.wikidata.org/wiki/${item.qid}`;
+    }
+
+    // Positioned within #plot, which wraps the canvas — so canvas coordinates
+    // are already the right frame of reference.
+    card.hidden = false;
+    const { width, height } = card.getBoundingClientRect();
+    const x = Math.max(8, Math.min(this.hover.x0 + 12, this.cssWidth - width - 8));
     const y = Math.min(
       TOP_MARGIN + this.hover.lane * LANE_HEIGHT + 18,
-      this.cssHeight - h - DENSITY_HEIGHT,
+      Math.max(8, this.cssHeight - height - DENSITY_HEIGHT),
     );
+    card.style.left = `${x}px`;
+    card.style.top = `${y}px`;
+  }
 
-    const pc = palette();
-    ctx.fillStyle = pc.cardBg;
-    ctx.strokeStyle = pc.cardBorder;
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, 6);
-    ctx.fill();
-    ctx.stroke();
+  // Leaving an item does not hide the card immediately: the pointer needs time
+  // to travel from the item to the card, and the card is the only way to reach
+  // the Wikidata link.
+  scheduleHide() {
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => {
+      this.hideTimer = null;
+      this.hover = null;
+      this.updateCard();
+      this.render();
+    }, CARD_HIDE_MS);
+  }
 
-    ctx.textAlign = "left";
-    lines.forEach((line, i) => {
-      ctx.fillStyle = i === 0 ? pc.cardTitle : pc.cardBody;
-      ctx.font = i === 0 ? '650 12px system-ui, -apple-system, sans-serif' : MONO_FONT;
-      ctx.fillText(line, x + 10, y + 16 + i * 17);
-    });
+  keepCard() {
+    clearTimeout(this.hideTimer);
+    this.hideTimer = null;
   }
 
   updateReadout() {
