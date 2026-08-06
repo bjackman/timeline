@@ -240,11 +240,9 @@ glance whether the *data* actually changed. Provenance lives in git history.
 
 Recorded so they are not rediscovered as bugs.
 
-- **Spans wider than the viewport lose their labels.** The label is drawn to the
-  right of the marker, or flipped left when that would overflow. A span whose
-  both ends are off-screen has nowhere to put it, so it renders as an unlabelled
-  full-width bar. The fix is to pin such labels to the viewport edge; not done
-  yet.
+- ~~**Spans wider than the viewport lose their labels.**~~ Fixed: `placeLabel`
+  in `web/scale.js` pins them inside the visible part of the band. It mattered
+  more than it sounds — at 25x zoom, 13 of the 16 visible items were unlabelled.
 - ~~**Category mapping is a keyword hack.**~~ Fixed: `P279*` closure
   classification, above. The residual `other` is 14.5% and is genuinely
   miscellaneous — currencies, historical ethnic groups, archaeological sites,
