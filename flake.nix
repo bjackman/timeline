@@ -102,6 +102,14 @@
                 node tools/test-categories.mjs | tee $out
               '';
 
+          # The renderer, against a stub DOM. Covers what the pure tests
+          # cannot: that first paint runs at all, and that the layout
+          # invariants hold over the real slice at every zoom.
+          render-tests = pkgs.runCommand "timeline-render-tests" { nativeBuildInputs = [ node ]; } ''
+            cd ${src}
+            node tools/test-render.mjs | tee $out
+          '';
+
           # Guards the bundler's own invariants — it refuses to emit output if
           # module syntax survives flattening or the script tag is not replaced.
           inherit standalone;
@@ -204,6 +212,7 @@
               cd ${src}
               node tools/test-scale.mjs
               node tools/test-categories.mjs
+              node tools/test-render.mjs
             '';
           };
         };
