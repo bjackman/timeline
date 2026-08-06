@@ -115,6 +115,76 @@ export function placeLabel(x0, x1, labelWidth, width) {
   };
 }
 
+// Lanes we bother to assign. Independent of window height on purpose: the
+// viewport decides how many lanes it can *show*, but if it decided how many
+// exist then resizing the window would reshuffle every item.
+export const LANE_LIMIT = 64;
+
+// Gap between neighbours in a lane, in pixels, converted to years by the
+// caller. Packing happens in year space; see computeLanes.
+export const LANE_GAP_PX = 6;
+
+// First index whose interval starts at or after x.
+function lowerBound(list, x) {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid][0] < x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function fits(list, a, b) {
+  const i = lowerBound(list, a);
+  if (i < list.length && list[i][0] < b) return false;
+  if (i > 0 && list[i - 1][1] > a) return false;
+  return true;
+}
+
+// Assign every item a lane, in YEAR space, for the whole timeline at once.
+//
+// The bug this fixes: packing only the visible items, every frame, meant that
+// panning changed the input set, so an item arriving at one edge could push
+// everything else to a different row. The timeline shuffled while you scrubbed.
+//
+// Packing globally in year space makes the result independent of where the
+// viewport is, so panning cannot change any item's row — by construction, not
+// by luck. It still depends on the zoom, because a label's width is fixed in
+// pixels and therefore covers more years the further you zoom out. That is why
+// the only input from the view is yearsPerPixel.
+//
+// Items are fed in notability order, so the most-wanted events take the top
+// lanes globally rather than merely locally. Anything past LANE_LIMIT is
+// dropped; the density strip is what reports it.
+//
+// Packing assumes the label sits to the right. At draw time a label near the
+// canvas edge may flip or pin, which can overlap a neighbour — a rare, purely
+// horizontal cost, and much cheaper than reserving space on both sides of
+// every item forever.
+export function computeLanes(items, yearsPerPixel, labelWidthPx) {
+  const lanes = new Map();
+  const occupied = [];
+  const gap = LANE_GAP_PX * yearsPerPixel;
+
+  for (const item of items) {
+    const { lo, hi } = itemYearRange(item);
+    const a = lo - gap;
+    const b = hi + (labelWidthPx(item) + LABEL_GAP) * yearsPerPixel + gap;
+
+    let lane = occupied.findIndex((list) => fits(list, a, b));
+    if (lane === -1) {
+      if (occupied.length >= LANE_LIMIT) continue;
+      lane = occupied.length;
+      occupied.push([]);
+    }
+    occupied[lane].splice(lowerBound(occupied[lane], a), 0, [a, b]);
+    lanes.set(item.qid, lane);
+  }
+  return lanes;
+}
+
 export const yearsAgo = (year) => NOW - year;
 
 // The internal coordinate. +1 keeps log10 finite at the present; the clamp

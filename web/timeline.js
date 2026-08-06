@@ -20,6 +20,7 @@ import {
   linearTicks,
   itemYearRange,
   placeLabel,
+  computeLanes,
 } from "./scale.js";
 
 const CATEGORIES = [
@@ -122,28 +123,12 @@ function extent(view, item, ctx) {
   };
 }
 
-// Greedy lane packing: first lane where this item does not collide. Items are
-// fed in notability order, so the most-wanted events get the best slots.
-function assignLanes(view, items, ctx, maxLanes) {
-  const laneEnds = [];
-  const placed = [];
-  for (const item of items) {
-    const e = extent(view, item, ctx);
-    // Cull on the marker, not the label span. A span reaching in from off-screen
-    // left is still visible, but a marker past the right edge is not — and
-    // keeping those alive only produces labels sliced by the canvas edge.
-    if (e.x1 < 0 || e.x0 > view.width) continue;
-    let lane = laneEnds.findIndex((end) => e.left > end + 6);
-    if (lane === -1) {
-      if (laneEnds.length >= maxLanes) continue; // no room; density strip reports it
-      lane = laneEnds.length;
-      laneEnds.push(-Infinity);
-    }
-    laneEnds[lane] = e.right;
-    placed.push({ item, lane, ...e });
-  }
-  return placed;
-}
+// Lane assignment is global and pan-invariant — see computeLanes in scale.js.
+// It only has to be redone when the zoom changes, and not even then for a
+// change too small to matter: a label's width in years moves with the scale,
+// so a few percent of drift costs a few pixels of gap, while recomputing on
+// every frame of a zoom gesture makes the rows twitch.
+const LANE_SCALE_TOLERANCE = 1.05;
 
 class Timeline {
   constructor(canvas, data) {
@@ -156,6 +141,8 @@ class Timeline {
     this.enabled = new Set(CATEGORIES);
     this.hover = null;
     this.dragging = false;
+    this.labelPx = new Map();
+    this.laneCache = null;
     this.resize();
     this.bindEvents();
   }
@@ -186,6 +173,36 @@ class Timeline {
 
   applyFilter() {
     this.items = this.all.filter((i) => this.enabled.has(i.category));
+  }
+
+  // Label widths never change — same text, same font — so measure once and
+  // keep it. Lane packing needs every item's width, not just the visible ones.
+  labelWidth(item, ctx) {
+    let w = this.labelPx.get(item.qid);
+    if (w === undefined) {
+      w = ctx.measureText(item.label).width;
+      this.labelPx.set(item.qid, w);
+    }
+    return w;
+  }
+
+  lanesFor(ctx) {
+    const yearsPerPixel = this.view.span / this.view.width;
+    const c = this.laneCache;
+    if (
+      c &&
+      c.items === this.items &&
+      yearsPerPixel / c.yearsPerPixel < LANE_SCALE_TOLERANCE &&
+      c.yearsPerPixel / yearsPerPixel < LANE_SCALE_TOLERANCE
+    ) {
+      return c.lanes;
+    }
+    ctx.font = UI_FONT;
+    const lanes = computeLanes(this.items, yearsPerPixel, (item) => this.labelWidth(item, ctx));
+    // Identity check on items is what catches a category filter change:
+    // applyFilter builds a new array.
+    this.laneCache = { items: this.items, yearsPerPixel, lanes };
+    return lanes;
   }
 
   // Zoom rate that ramps while a scroll gesture continues. A fixed rate cannot
@@ -392,8 +409,19 @@ class Timeline {
 
     this.drawAxis(H);
 
+    const lanes = this.lanesFor(ctx);
     const maxLanes = Math.floor((this.densityTop - TOP_MARGIN) / LANE_HEIGHT);
-    this.placed = assignLanes(this.view, this.items, ctx, maxLanes);
+    this.placed = [];
+    for (const item of this.items) {
+      const lane = lanes.get(item.qid);
+      // Beyond LANE_LIMIT, or below the fold of this window.
+      if (lane === undefined || lane >= maxLanes) continue;
+      const e = extent(this.view, item, ctx);
+      // Cull on the band, not the label span. A span reaching in from off-screen
+      // is still visible; a band entirely past an edge is not.
+      if (e.x1 < 0 || e.x0 > W) continue;
+      this.placed.push({ item, lane, ...e });
+    }
     for (const p of this.placed) this.drawItem(p);
 
     this.drawDensity(H);

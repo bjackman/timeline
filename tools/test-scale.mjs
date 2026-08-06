@@ -29,7 +29,10 @@ import {
   linearTicks,
   formatTickYear,
   formatSpan,
+  computeLanes,
+  LANE_LIMIT,
 } from "../web/scale.js";
+import { readFile } from "node:fs/promises";
 
 let passed = 0;
 const failures = [];
@@ -419,6 +422,83 @@ check("span formats as Gy", formatSpan(13.8e9).endsWith("Gy"));
 check("span formats as My", formatSpan(5e6).endsWith("My"));
 check("span formats as ky", formatSpan(5e3).endsWith("ky"));
 check("span formats as days below a month", formatSpan(1 / 365).endsWith("d"));
+
+// --- lane assignment ------------------------------------------------------
+// The property under test is that a lane depends on the zoom and on nothing
+// else. Panning must not be able to move an item to a different row, which is
+// what happened when only the visible items were packed, every frame.
+
+const laneItem = (qid, year, endYear = null, precision = 9) => ({
+  qid,
+  label: qid,
+  start: { year },
+  startPrecision: precision,
+  end: endYear === null ? null : { year: endYear },
+  endPrecision: endYear === null ? null : precision,
+});
+
+const width20 = () => 20; // every label 20px wide
+
+{
+  const items = [laneItem("A", 1000), laneItem("B", 1900)];
+  const lanes = computeLanes(items, 1, width20);
+  check("items far apart share a lane", lanes.get("A") === lanes.get("B"));
+}
+
+{
+  const items = [laneItem("A", 1000, 1900), laneItem("B", 1500, 1800)];
+  const lanes = computeLanes(items, 1, width20);
+  check("overlapping items take different lanes", lanes.get("A") !== lanes.get("B"));
+}
+
+{
+  // Notability order decides who gets the top lane; the first item in wins.
+  const items = [laneItem("first", 1000, 1900), laneItem("second", 1500, 1800)];
+  const lanes = computeLanes(items, 1, width20);
+  check("the first item listed takes the top lane", lanes.get("first") === 0);
+}
+
+{
+  // A label is fixed in pixels, so it covers more years as you zoom out — the
+  // one and only reason lanes depend on the scale at all.
+  const items = [laneItem("A", 1000), laneItem("B", 1050)];
+  check("close items fit one lane when zoomed in", computeLanes(items, 1, width20).get("B") === 0);
+  check("...and separate when zoomed out", computeLanes(items, 10, width20).get("B") === 1);
+}
+
+{
+  // Beyond the limit, items are dropped rather than assigned a lane no window
+  // could show. The density strip is what reports them.
+  const items = Array.from({ length: LANE_LIMIT + 20 }, (_, i) => laneItem(`i${i}`, 1000, 1900));
+  const lanes = computeLanes(items, 1, width20);
+  check("lane count is capped", Math.max(...lanes.values()) === LANE_LIMIT - 1);
+  check("...and the overflow is dropped", lanes.size === LANE_LIMIT);
+}
+
+{
+  // The real slice, at several zooms: no two items sharing a lane may overlap.
+  // A greedy packer that is subtly wrong still looks plausible on screen.
+  const slice = JSON.parse(await readFile("data/slice.json", "utf8"));
+  const items = [...slice.items].sort((a, b) => b.sitelinks - a.sitelinks);
+  let worst = null;
+  for (const yearsPerPixel of [1e7, 1e5, 1e3, 10, 0.1]) {
+    const lanes = computeLanes(items, yearsPerPixel, () => 60);
+    const byLane = new Map();
+    for (const item of items) {
+      const lane = lanes.get(item.qid);
+      if (lane === undefined) continue;
+      const { lo, hi } = itemYearRange(item);
+      const label = (60 + LABEL_GAP) * yearsPerPixel;
+      const list = byLane.get(lane) ?? [];
+      for (const [a, b] of list) {
+        if (lo < b && a < hi + label) worst = `${item.label} at ${yearsPerPixel} y/px`;
+      }
+      list.push([lo, hi + label]);
+      byLane.set(lane, list);
+    }
+  }
+  check("no two items in a lane overlap, at any zoom", worst === null, worst ?? "");
+}
 
 // --- report ---------------------------------------------------------------
 
