@@ -21,6 +21,7 @@ tools/categorise.mjs        ordered closure rules -> category (pure, no network)
 tools/recategorise.mjs      re-classify a slice from the cache (offline, instant)
 tools/test-scale.mjs        headless tests for the time-scale maths
 tools/test-categories.mjs   headless tests for the category rules
+tools/test-render.mjs       headless render tests against a stub DOM
 tools/build-standalone.mjs  bundles everything into one self-contained HTML file
 tools/screenshot.mjs        renders the page at several zooms (needs playwright)
 data/slice.json             the v0 slice (committed; regenerate with the tool)
@@ -68,6 +69,7 @@ Node 22+ for the tools, Python for the server.
 # tests — fast, no network
 node tools/test-scale.mjs
 node tools/test-categories.mjs
+node tools/test-render.mjs      # layout invariants over the real slice
 
 # re-classify the slice after editing the category rules — offline, instant
 node tools/recategorise.mjs --dry-run     # histogram, sample items, churn
@@ -137,6 +139,25 @@ These are load-bearing. Each one is a bug that has already been hit.
   light mode. Adding a colour means adding a `--c-*` or `--cat-*` token to
   `web/index.html` in **all three** theme blocks: `:root`, the
   `prefers-color-scheme: dark` media query, and both `[data-theme]` overrides.
+- **Lane assignment must not depend on where the viewport is.** `computeLanes`
+  packs every item in *year space*, globally, so panning cannot move an item to
+  a different row. Packing only the visible items — the obvious thing — makes
+  the whole timeline reshuffle as items enter at the edges. Lanes may depend on
+  the zoom, because a label's width is fixed in pixels and so covers more years
+  the further out you go; nothing else.
+- **What is fixed must be known before what is negotiable.** Bands are fixed by
+  lane packing; labels can move, flip, pin or drop. So `render` collects every
+  visible band *first* and only then places labels against all of them. Placing
+  labels as bands are discovered puts a notable item's label on top of a bar it
+  had not seen yet — 162 such overlaps across 405 test viewports.
+- **Never measure canvas text in one font and draw it in another.** Nothing
+  enforces that they agree, so the box comes out narrower than the text. This
+  is why the hover card is DOM: the browser lays it out, and it can hold real
+  links. Canvas text that remains (labels, ticks) measures and draws with the
+  same constant.
+- **The main axis is linear** (`LinearView`). The log `View` still exists but
+  only projects the navigator strip. Do not reintroduce it as the main axis;
+  see `docs/decisions.md` for why it was reversed.
 - **Do not hand-edit `dist/timeline.html`.** It is generated; edit `web/` and
   rebuild.
 

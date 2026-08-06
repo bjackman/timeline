@@ -7,6 +7,147 @@ Newest first.
 
 ---
 
+## Axis: linear, with the log axis kept as the navigator
+
+**Reverses the "logarithmic in years ago" decision below, which is superseded.**
+
+**Chosen:** a linear window over years, `(centre, span)`, as the main axis. The
+log axis survives as a fixed navigator strip along the bottom.
+
+**Why the reversal:** the log axis made everything visible at once but nothing
+comparable. It is impossible to see that the Phanerozoic is a twenty-fifth of
+Earth's history when the projection bends every duration. Seeing deep time to
+scale, and then zooming into human history as a slice of it, is the point of
+the product; a log axis cannot show it at any zoom.
+
+The numbers the design has to survive, at 1400px:
+
+| | |
+| --- | --- |
+| one pixel, at full view | 9.86 My |
+| the whole Phanerozoic | 55 px |
+| everything since the first *Homo* | 0.3 px |
+| recorded history | 5×10⁻⁴ px |
+| zoom range, full view to one day | 5×10¹² |
+
+**Rejected: fixed-point or split arithmetic** for that range. `LinearView`
+holds `(centre, span)` rather than `(left, right)` so `x()` subtracts years
+*within the window* before scaling, which ties float64's resolution to the
+window rather than to the age of the universe. At 13.8 Ga the representable
+increment is about 70 seconds — a million times finer than the data's precision
+there.
+
+**Rejected: era presets** ("Universe / Life / Hominins / Modern") as the way to
+travel. They are a menu of destinations, not navigation. What shipped instead
+is several mechanisms that natively cross orders of magnitude: wheel zoom that
+accelerates while the gesture continues (66 notches from the Big Bang to a day,
+against ~160 at a flat rate), trackpad pinch, right-drag for continuous
+exponential zoom, shift-drag to box-select a range, and the two strips.
+
+**Rejected: three significant figures in tick labels.** `formatYear` is right
+for a hover card and wrong for an axis: a 14,000-year window at 6.9 Ga rendered
+six identical "6.90 Ga" labels and the axis looked frozen. `formatTickYear`
+takes its decimals from the tick *step*, guaranteeing adjacent ticks differ.
+
+---
+
+## Layout: what is fixed must be known before what is negotiable
+
+Two overlap bugs, one root cause. Worth stating as a principle because it will
+recur wherever placement is greedy.
+
+**A band's position is fixed** by lane packing. **A label's is negotiable** —
+it can sit right, flip left, pin inside its own band, or be dropped. So every
+band must be known before any label is placed.
+
+**Chosen:** lanes are assigned globally in year space for all items at once,
+then rendering runs in two passes — collect every visible band, then place
+labels against all of them in notability order.
+
+**Rejected: packing only the visible items, per frame.** Panning changed the
+input set, so an item arriving at one edge moved everything else to a different
+row; the timeline danced while scrubbing. Lane assignment now takes no input
+from the viewport's position, so panning cannot change a row by construction.
+Verified: 60 pan steps, 3,772 item-frames, 14 items entering view, zero lane
+changes.
+
+Lanes still depend on the *zoom*, and must: a label is fixed in pixels, so it
+covers more years the further out you go. A 5% scale tolerance stops the rows
+twitching during a zoom gesture.
+
+**Rejected: placing labels while discovering bands.** A notable item chooses
+early, flips left, and lands on the band of a less notable item not yet
+reached — and that band cannot move. Measured: 162 labels sitting on a bar
+across 405 viewports, including COVID-19 over Proterozoic.
+
+**Rejected: reserving label space on both sides during packing.** It would keep
+packing viewport-independent while making flips safe, but doubles every item's
+footprint permanently to fix a case that arises at the canvas edges only.
+
+**Rejected: a greedy packer that tracks only each lane's rightmost edge.** It
+refuses any item starting left of that even when they cannot overlap. Real
+interval checks lifted the full view from 32 items shown to 52.
+
+---
+
+## Edges: the axis runs past both ends of time
+
+**Chosen:** 80px of margin beyond the Big Bang and beyond the present.
+
+**Rejected: clamping hard to `[BIG_BANG, NOW]`.** The present then sits exactly
+on the right edge, so the only cursor position that keeps it in view while
+zooming is the final pixel — anchor anywhere to its left and it slides off, and
+you have to zoom, then pan back, then zoom again. With a margin the newest
+events are something you can put a cursor on: pointing at the present and
+scrolling holds it at x=1320 of 1400 across 45 notches, from 13.8 Gy down to a
+single day.
+
+Pixels rather than a fraction of the span, so the margin looks the same at
+every zoom. It also gives present-day labels somewhere to go other than
+flipping left — which was a cause of the label collisions above.
+
+Ticks are clipped to real time and the ends are drawn as dashed hairlines, so
+the margin reads as the edge of what exists rather than as a rendering failure.
+
+---
+
+## The minimap floors its mark, and says so
+
+**Chosen:** a fixed linear minimap above the detail view, with leader lines to
+the detail view's edges, the viewport mark floored at 2px, and a caption giving
+the true fraction.
+
+The viewport is routinely far below a pixel on it — at full zoom, one part in
+five trillion of history. The floor is a deliberate lie about *width*, and the
+only one: the position is exact, the leader lines run to the true edges, and
+the caption states the real fraction. Without the floor there is nothing to
+see; without the caption the floor overstates how much of time is on screen by
+a factor of a million.
+
+**Why both strips:** the log navigator can show every era legibly and cannot
+show proportion; the linear minimap shows proportion and cannot show recent
+history at all. Neither does the other's job.
+
+---
+
+## The hover card is DOM, not canvas
+
+**Chosen:** a positioned DOM element, kept alive for 260ms after the pointer
+leaves the item and cancelled when the pointer enters the card.
+
+**Rejected: drawing it on the canvas**, which is what v0 did. Canvas text is
+measured and drawn in separate calls and nothing enforces that the two agree —
+the card measured its title in `UI_FONT` and painted it at 650 weight, so long
+titles ("Sustainable Development Goals") ran out of a box sized for narrower
+text. Letting the browser lay out text removes the whole class of bug, and only
+DOM can hold real links: Wikipedia and Wikidata as anchors that can be
+right-clicked, opened in a tab, and reached by keyboard.
+
+The delay is load-bearing rather than polish: without it the card cannot be
+reached at all, and the Wikidata link is unclickable.
+
+---
+
 ## Bad upstream data is fixed upstream, not filtered in the pipeline
 
 **Chosen:** treat Wikidata as golden. When a value is garbage, fix it on
@@ -127,6 +268,11 @@ files — the migration is cheap and the data format is unaffected.
 ---
 
 ## Time axis: logarithmic in "years ago"
+
+**Superseded** by the linear-axis entry at the top of this file. Kept because
+the reasoning below is still why the log axis exists at all — it is now the
+navigator strip rather than the main axis, and the rejected options below are
+still rejected.
 
 **Chosen:** internal coordinate `u = log10(yearsAgo + 1)`, viewport is a window
 over u, zoom narrows the window.

@@ -152,6 +152,12 @@ guess did not survive contact with the work. See `docs/decisions.md`.
   rules that misfile 40% of them bakes the mistake into every tile. The
   closures are cached, so re-tuning never re-queries and re-classifying never
   re-harvests.
+- **v0.2 — done.** The axis is now **linear**, because durations to scale is
+  the point and a log axis cannot show it. The log axis is kept as a fixed
+  navigator strip, joined by a linear minimap that shows what fraction of
+  history is on screen. See `docs/decisions.md`; the "13.8 billion years down
+  to a single day" problem above is solved by navigation — accelerating wheel
+  zoom, drag, range-select — rather than by bending the axis.
 - **v1** — full sharded harvest, tiling, notability ranking.
 - **v2** — category filters, search, preview cards.
 - **v3** — dump-based completeness pass, pageview ranking, images, other
