@@ -21,6 +21,9 @@ import {
   ticks,
   PRECISION_HALF_WIDTH_YEARS,
   itemYearRange,
+  placeLabel,
+  LABEL_GAP,
+  LABEL_MARGIN,
 } from "../web/scale.js";
 
 let passed = 0;
@@ -260,6 +263,46 @@ check("niceStep snaps 37 to 50", niceStep(37) === 50);
   // edge of the axis.
   const { lo, hi } = itemYearRange({ start: { year: 1500 }, startPrecision: 99, end: null });
   check("unknown precision code is finite", Number.isFinite(lo) && Number.isFinite(hi));
+}
+
+// --- label placement ------------------------------------------------------
+// The third case is the one that matters: a band wider than the viewport has
+// no on-screen end to hang a label from, and before pinning those items drew
+// as anonymous full-width bars. Deep time is made of them.
+
+{
+  const { labelX, flip, pinned } = placeLabel(300, 400, 80, 1000);
+  check("a label sits to the right of its band", labelX === 400 + LABEL_GAP);
+  check("...and is neither flipped nor pinned", !flip && !pinned);
+}
+
+{
+  // Band near the right edge: the label would be sliced, so it flips left.
+  const { labelX, flip, pinned } = placeLabel(900, 950, 80, 1000);
+  check("a label near the right edge flips", flip && !pinned);
+  check("...to the left of the band", labelX === 900 - LABEL_GAP - 80);
+}
+
+{
+  // The Jurassic case: both ends off-screen.
+  const { labelX, pinned } = placeLabel(-5000, 6000, 80, 1000);
+  check("a band wider than the viewport pins its label", pinned);
+  check("...inside the canvas, not off the left edge", labelX >= LABEL_MARGIN, `got ${labelX}`);
+  check("...and not past the right edge", labelX + 80 <= 1000 - LABEL_MARGIN, `got ${labelX}`);
+}
+
+{
+  // Reaching in from the left only: still nothing to the left to flip into.
+  const { labelX, pinned } = placeLabel(-5000, 990, 80, 1000);
+  check("a band reaching in from off-screen left pins too", pinned);
+  check("...and stays on canvas", labelX >= LABEL_MARGIN && labelX + 80 <= 1000);
+}
+
+{
+  // A label wider than the whole viewport cannot be placed. The renderer skips
+  // anything left of the margin, so returning that is the "no room" signal.
+  const { labelX } = placeLabel(-500, 1500, 1200, 1000);
+  check("an over-wide label is left unplaceable", labelX < LABEL_MARGIN, `got ${labelX}`);
 }
 
 // --- report ---------------------------------------------------------------

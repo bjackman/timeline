@@ -7,7 +7,14 @@
 //
 // Left is older, right is now.
 
-import { View, formatYear, formatItemDate, ticks, itemYearRange } from "./scale.js";
+import {
+  View,
+  formatYear,
+  formatItemDate,
+  ticks,
+  itemYearRange,
+  placeLabel,
+} from "./scale.js";
 
 const CATEGORIES = [
   "conflict",
@@ -64,27 +71,25 @@ export function invalidatePalette() {
 // Bands are computed in year space and then projected, so they warp correctly
 // under the log axis rather than being a fixed pixel width.
 //
-// Labels normally sit to the right of the marker. Near the right edge that
-// would run them off-canvas and they get sliced mid-word, so they flip to the
-// left instead. The returned left/right are the full occupied span including
-// the label, whichever side it ended up on — lane packing needs that, not just
-// the marker bounds.
+// Label placement lives in scale.js; see placeLabel for the three cases. The
+// returned left/right are the full occupied span including the label, wherever
+// it ended up — lane packing needs that, not just the band bounds.
 function extent(view, item, ctx) {
   const { lo, hi } = itemYearRange(item);
   const x0 = view.x(lo);
   const x1 = view.x(hi);
   const labelWidth = ctx.measureText(item.label).width;
+  const { labelX, flip, pinned } = placeLabel(x0, x1, labelWidth, view.width);
 
-  const flip = x1 + 8 + labelWidth > view.width - 4 && x0 - 8 - labelWidth > 0;
-  const labelX = flip ? x0 - 8 - labelWidth : x1 + 8;
   return {
     x0,
     x1,
     flip,
+    pinned,
     labelX,
     labelWidth,
-    left: flip ? labelX : x0,
-    right: flip ? x1 : labelX + labelWidth,
+    left: Math.min(x0, labelX),
+    right: Math.max(x1, labelX + labelWidth),
   };
 }
 
@@ -293,6 +298,14 @@ class Timeline {
     // A label that does not fit on either side is omitted rather than drawn and
     // sliced by the canvas edge. The marker stays, and hovering still names it.
     if (p.labelX < 0 || p.labelX + p.labelWidth > this.cssWidth) return;
+
+    // A pinned label sits on top of the band's own fill rather than on empty
+    // canvas, so it needs a backing plate to stay readable. The plate token is
+    // the translucent page colour, which is why this works in both themes.
+    if (p.pinned) {
+      ctx.fillStyle = pal.plate;
+      ctx.fillRect(p.labelX - 4, y - 8, p.labelWidth + 8, 16);
+    }
 
     ctx.textAlign = "left";
     if (isHover) {

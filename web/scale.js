@@ -71,6 +71,50 @@ export function itemYearRange(item) {
   };
 }
 
+// Gap between a band and its label, and the margin kept clear at the canvas
+// edges. Exported so the tests state the rule in the same units the renderer
+// uses rather than reimplementing it.
+export const LABEL_GAP = 8;
+export const LABEL_MARGIN = 4;
+
+// Where an item's label goes, given its band on screen and the viewport width.
+//
+// Three cases, in order of preference:
+//
+//   1. To the right of the band — the default.
+//   2. Flipped to its left, when the right would run off the canvas and get
+//      sliced mid-word.
+//   3. Pinned inside the visible part of the band.
+//
+// The third case exists because a band wider than the viewport has *both* ends
+// off-screen, so there is no edge left to hang a label from. Deep time is made
+// of exactly those: the Jurassic at full zoom is a bar running off both sides,
+// and without pinning it draws as an anonymous stripe. Pinning to the viewport
+// edge is what map labels do with long roads, for the same reason.
+//
+// Returns pinned so the renderer can back the text with a plate — a pinned
+// label sits on top of the band's own fill rather than on empty canvas.
+export function placeLabel(x0, x1, labelWidth, width) {
+  const right = x1 + LABEL_GAP;
+  if (right + labelWidth <= width - LABEL_MARGIN) {
+    return { labelX: right, flip: false, pinned: false };
+  }
+  const left = x0 - LABEL_GAP - labelWidth;
+  if (left >= LABEL_MARGIN) {
+    return { labelX: left, flip: true, pinned: false };
+  }
+  // Clamped both ways: never left of the margin, never past the right edge.
+  // A label wider than the whole viewport ends up with labelX < LABEL_MARGIN,
+  // which the renderer treats as "no room" and skips.
+  const inside = Math.max(x0, 0) + LABEL_GAP;
+  const furthest = width - LABEL_MARGIN - labelWidth;
+  return {
+    labelX: Math.min(Math.max(inside, LABEL_MARGIN), furthest),
+    flip: false,
+    pinned: true,
+  };
+}
+
 export const yearsAgo = (year) => NOW - year;
 
 // The internal coordinate. +1 keeps log10 finite at the present; the clamp
