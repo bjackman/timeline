@@ -9,15 +9,22 @@ query behaviour that is not obvious and cost real time to find.
 ## Where things are
 
 ```
-flake.nix                   Nix packaging (flake-utils); no flake.lock yet, see below
+flake.nix                   Nix packaging (flake-utils), with flake.lock committed
 DESIGN.md                   architecture and phasing
 docs/wdqs-notes.md          measured WDQS behaviour — read before touching queries
 docs/decisions.md           decision log: chosen, rejected, why; known limitations
+tools/wdqs.mjs              shared WDQS client: politeness, retries, chunking
 tools/fetch-slice.mjs       builds the v0 dev slice from WDQS
+tools/closures.mjs          fetches and caches P279* type closures
+tools/fetch-closures.mjs    CLI over the above, for types outside the slice
+tools/categorise.mjs        ordered closure rules -> category (pure, no network)
+tools/recategorise.mjs      re-classify a slice from the cache (offline, instant)
 tools/test-scale.mjs        headless tests for the time-scale maths
+tools/test-categories.mjs   headless tests for the category rules
 tools/build-standalone.mjs  bundles everything into one self-contained HTML file
 tools/screenshot.mjs        renders the page at several zooms (needs playwright)
 data/slice.json             the v0 slice (committed; regenerate with the tool)
+data/type-closures.json     cached P279* closures + labels (committed)
 web/                        canvas frontend, no build step
 dist/                       derived, gitignored
 ```
@@ -27,23 +34,25 @@ dist/                       derived, gitignored
 ### With Nix
 
 ```sh
-nix flake lock          # ONCE — no lock is committed, see below
 nix run                 # build and serve the bundle on :8000
 nix run .#dev           # serve the working tree (repo root) at /web/
 nix run .#test          # the time-scale tests
 nix run .#fetch-slice   # re-fetch data/slice.json from Wikidata (~20 min)
+nix run .#fetch-closures   # fill in missing P279* type closures
+nix run .#recategorise -- --dry-run   # re-classify from the cache, offline
 nix build               # -> result/index.html, deployable as-is
 nix flake check         # tests + bundle build
 nix develop             # node, python3, jq
 nix fmt                 # nixfmt-rfc-style
 ```
 
-**`flake.lock` is not committed.** It could not be generated in the environment
-this was written in — GitHub was unreachable for anything outside the repo's own
-owner, so the inputs could not be resolved. Run `nix flake lock` once and commit
-the result. The flake itself is verified: every output was evaluated and the
-packages, checks and apps were built, with the two inputs temporarily redirected
-to `channels.nixos.org` and `flakehub.com`.
+**On virtiofs, use `path:` rather than the bare flake ref.** Nix's bundled
+libgit2 cannot read packfiles on a virtiofs mount, so every `nix` command in a
+checkout under `/mnt/src` fails with `object not found` and a spurious "Git
+tree is dirty". `nix flake check 'path:/mnt/src/timeline'` bypasses the git
+fetcher and works. Verified: the same repo copied to ext4 works, and a copy
+left on virtiofs with its objects unpacked to loose works — it is packfiles on
+virtiofs specifically.
 
 The fetcher is an **app, not a package**, because it needs network and a Nix
 build sandbox has none. `packages.default` is the bundled single file rather than
@@ -56,8 +65,13 @@ root.
 Node 22+ for the tools, Python for the server.
 
 ```sh
-# tests for the time-scale maths — fast, no network
+# tests — fast, no network
 node tools/test-scale.mjs
+node tools/test-categories.mjs
+
+# re-classify the slice after editing the category rules — offline, instant
+node tools/recategorise.mjs --dry-run     # histogram, sample items, churn
+node tools/recategorise.mjs               # write it back to data/slice.json
 
 # serve — must be over http, the page fetches ../data/slice.json
 python3 -m http.server 8000
@@ -83,7 +97,8 @@ outgrows a couple of files.
 
 v0. A ~500-item slice spanning the Big Bang to the present renders on a
 logarithmic "years ago" axis with zoom, pan, category filters and precision
-bands. The full harvest is not built yet.
+bands. Categories come from the real `P279*` closure, not keywords. The full
+harvest is not built yet.
 
 See `DESIGN.md` for phasing. Next up is v1: the full sharded harvest and the
 tile pipeline.
@@ -106,6 +121,14 @@ These are load-bearing. Each one is a bug that has already been hit.
 - **Calendar units must be excluded by direct `P31` match**, never by `P279*`
   closure — every closure root broad enough to catch them also catches Cambrian
   and World War II.
+- **Never pick a classification root by browsing the ontology.** Measure which
+  ancestors actually occur first. Wikidata's upper ontology puts 88 of 525
+  historical events under "topological space", files every currency under
+  "tool" and every film under "product". `RULES` in `tools/categorise.mjs` is
+  **ordered and the order is load-bearing** — a war is also a historical
+  period, a historical country is also a polity. Reordering it to fix one
+  classification is how another regresses, which is what
+  `tools/test-categories.mjs` exists to catch.
 - **Wikidata items may have no English label.** Fall back to the enwiki sitelink
   title.
 - **Canvas colours must come from the CSS tokens**, via `palette()` in
@@ -128,6 +151,34 @@ Keep that true:
   `docs/decisions.md`. The rejected options are the expensive part.
 - Prefer comments that explain *why* over *what*, especially for the query
   shapes — they look arbitrary and are not.
+
+## Committing
+
+**This project is entirely vibe-coded, commit history included.** Nobody is
+writing these commits by hand, so do not wait to be asked: when a piece of work
+reaches a working state, commit it. Committing directly on `master` is the
+normal flow here.
+
+Normal best practice still applies, and matters *more* here rather than less —
+the history is the only account of how this was built:
+
+- **Small commits that step from one working state to the next.** Not one giant
+  commit at the end of a session, and not a snapshot of a half-finished
+  refactor.
+- **Never commit something broken.** Run the tests first — `node
+  tools/test-scale.mjs` and `node tools/test-categories.mjs`, plus `nix flake
+  check 'path:.'` when the flake changed. A commit that does not build is worse
+  than no commit, because it makes `git bisect` lie.
+- **Order the commits so each one stands alone.** If a change needs a new
+  module, the module lands first. A commit that only works because of the next
+  one is a broken commit.
+- **Write the message the way the existing ones are written**: imperative
+  subject, then prose explaining *why*, what was measured, and what was
+  verified. Same standard as the docs — the rejected option is the expensive
+  part.
+- Derived files (`dist/`, `result`) are gitignored and stay that way. Data
+  files (`data/slice.json`, `data/type-closures.json`) are committed, so a
+  regeneration that churns them belongs in its own commit.
 
 ## Etiquette
 
